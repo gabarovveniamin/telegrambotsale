@@ -1,6 +1,9 @@
 import os
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import List
+
+load_dotenv()
 
 @dataclass
 class Config:
