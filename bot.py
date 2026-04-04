@@ -677,41 +677,44 @@ async def send_sale_chunks(message, items, header):
     await message.answer("✅ <b>Вывод завершён!</b>", parse_mode="HTML")
 
 
-@router.message(Command("salealser"))
-async def cmd_salealser(message: types.Message):
-    """Скидки с Alser."""
+@router.message(Command("salesulpak"))
+async def cmd_salesulpak(message: types.Message):
+    """Команда для вывода акций Sulpak."""
     from parser import parser
     from curl_cffi.requests import AsyncSession
-
-    await message.answer("🔄 <b>Начинаю собирать скидки с Alser...</b>", parse_mode="HTML")
-    try:
-        async with AsyncSession(impersonate=parser.impersonate) as session:
-            items = await parser.fetch_alser(session)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-        return
+    await message.answer("🔄 <b>Начинаю собирать скидки с Sulpak...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_sulpak(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
 
     if not items:
-        await message.answer("Пока нет скидок в Alser.")
-        return
+        await message.answer("Пока нет скидок в Sulpak."); return
 
-    lines = [f"🟢 <b>Скидки Alser (Найдено: {len(items)})</b>\n"]
-    for item in items:
-        price_line = f"<s>{item['old_price']}</s> → <b>{item['new_price']}</b>"
-        title = item["title"][:57] + "..." if len(item["title"]) > 60 else item["title"]
-        lines.append(f"• <a href='{item['link']}'>{title}</a> (-{item.get('discount', 0)}%)\n  {price_line}\n")
+    header = f"🔴 <b>Скидки Sulpak (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
 
-    chunk = ""
-    for line in lines:
-        if len(chunk) + len(line) > 4000:
-            await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
-            chunk = line
-            await asyncio.sleep(0.5)
-        else:
-            chunk += line
-    if chunk:
-        await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
-    await message.answer("✅ <b>Вывод Alser завершён!</b>", parse_mode="HTML")
+
+@router.message(Command("saleshopkz"))
+async def cmd_saleshopkz(message: types.Message):
+    """Команда для вывода акций Shop.kz (Белый Ветер)."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Shop.kz...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_shopkz(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Shop.kz."); return
+
+    header = f"🌪 <b>Скидки Shop.kz (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
