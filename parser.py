@@ -428,60 +428,27 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     #  ALSER
     # ─────────────────────────────────────────────────────────────────────────
-    async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Alser.kz — парсинг через _payload.js файлы категорий.
-        Это гораздо надежнее прямого парсинга HTML, так как данные приходят в структурированном виде.
-        """
-        result: List[Dict[str, Any]] = []
-        seen_ids: set = set()
-
-        # Популярные категории для мониторинга
-        categories = [
-            "noutbuki",
-            "smartfony", 
-            "televizory",
-            "holodilniki",
-            "stiralnye-mashiny",
-            "naushniki",
-            "planshetye-kompyutery",
-            "monitory",
-        ]
-
-        headers = {
-            **self.base_headers,
-            "Accept": "*/*",
-            "Referer": "https://alser.kz/",
-            "Sec-Fetch-Dest": "script",
-        }
-
-        for category in categories:
+    async def fetch_category_alser(self, session: AsyncSession, category: str, sem: asyncio.Semaphore, seen_ids: set) -> List[Dict[str, Any]]:
+        """Парсинг конкретной категории Alser."""
+        result = []
+        async with sem:
             for page in range(1, MAX_PAGES + 1):
-                # Формируем URL к файлу данных
-                if page == 1:
-                    url = f"https://alser.kz/c/{category}/_payload.js"
-                else:
-                    url = f"https://alser.kz/c/{category}/_payload.js?page={page}"
-
-                r = await safe_request(session, "GET", url, headers=headers, timeout=30)
-                if r is None:
+                url = f"https://alser.kz/c/{category}/_payload.js" if page == 1 else f"https://alser.kz/c/{category}/_payload.js?page={page}"
+                
+                headers = {**self.base_headers, "Accept": "*/*", "Referer": "https://alser.kz/", "Sec-Fetch-Dest": "script"}
+                r = await safe_request(session, "GET", url, headers=headers, timeout=25)
+                if not r or not r.text:
                     break
 
                 raw = r.text
-                if not raw:
-                    break
-
-                # В Nuxt 3 Payload данные могут быть невалидным JSON для Python
-                # (из-за переменных типа category_id: $,), поэтому используемRegex.
-                # Ищем блоки, содержащие title, link_url, price и oldPrice
-                # Паттерн ищет "title":"...", "link_url":"...", "price":..., "oldPrice":...
+                # Паттерн для извлечения данных
                 items_data = re.findall(
                     r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?sku\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
                     raw, re.DOTALL
                 )
 
                 if not items_data:
-                    # Попробуем альтернативный паттерн без SKU, если первый не сработал
+                    # Запасной паттерн (без SKU)
                     items_data = re.findall(
                         r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
                         raw, re.DOTALL
@@ -493,59 +460,56 @@ class DiscountParser:
                         title, link, sku, new_p, old_p = entry
                     else:
                         title, link, new_p, old_p = entry
-                        sku = f"{hash(title)}" 
-
-                    # Безопасная очистка строк от юникод-символов типа \u002F
-                    def safe_clean(s: str) -> str:
-                        try:
-                            # Python 3 требует аккуратной обработки слешей
-                            return s.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"').replace('\\\\', '\\')
-                        except:
-                            return s
-
-                    title = safe_clean(title)
-                    link = safe_clean(link)
+                        sku = f"id_{hash(title)}"
 
                     try:
-                        new_f = float(new_p)
-                        old_f = float(old_p)
-                        if old_f <= new_f:
-                            continue
-                    except:
-                        continue
+                        new_f, old_f = float(new_p), float(old_p)
+                        if old_f <= new_f: continue
+                    except: continue
 
                     uid = f"al_{sku}"
-                    if uid in seen_ids:
-                        continue
+                    if uid in seen_ids: continue
                     seen_ids.add(uid)
 
-                    full_link = (
-                        f"https://alser.kz{link}"
-                        if link.startswith("/") else
-                        link or f"https://alser.kz/c/{category}"
-                    )
+                    title = title.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"')
+                    link = link.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"')
 
                     result.append({
-                        "id":        uid,
-                        "title":     title,
-                        "old_price": fmt_price(int(old_f)),
-                        "new_price": fmt_price(int(new_f)),
-                        "discount":  calc_discount(old_f, new_f),
-                        "link":      full_link,
-                        "shop":      "Alser",
+                        "id": uid, "title": title, "old_price": fmt_price(int(old_f)),
+                        "new_price": fmt_price(int(new_f)), "discount": calc_discount(old_f, new_f),
+                        "link": f"https://alser.kz{link}" if link.startswith("/") else link or f"https://alser.kz/c/{category}",
+                        "shop": "Alser"
                     })
                     found_on_page += 1
 
-                logger.info(f"Alser [{category}] page {page}: найдено {found_on_page} товаров")
-
-                # Если на странице ничего не нашли, скорее всего категорий больше нет
                 if found_on_page == 0:
                     break
-
-                await asyncio.sleep(0.2)
-
-        logger.info(f"Alser: итого найдено {len(result)} акций")
+                await asyncio.sleep(0.1)
+                
+        logger.info(f"Alser [{category}]: найдено {len(result)} акций")
         return result
+
+    async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        """
+        Alser.kz — параллельный парсинг категорий через _payload.js.
+        """
+        categories = [
+            "smartfony", "noutbuki", "planshety", "televizory", "monitory", 
+            "kompjutery", "akustika", "naushniki", "igrovye-konsoli", 
+            "myshy", "klaviatury", "holodilniki", "stiralnye-mashiny", 
+            "varochnye-paneli", "duhovye-shkafy", "pylesosy", "multivarki",
+            "feny-i-stajlery", "epiljatory"
+        ]
+        
+        seen_ids = set()
+        sem = asyncio.Semaphore(4) # Ограничиваем до 4 категорий параллельно
+        
+        tasks = [self.fetch_category_alser(session, cat, sem, seen_ids) for cat in categories]
+        results = await asyncio.gather(*tasks)
+        
+        all_items = [item for sublist in results for item in sublist]
+        logger.info(f"Alser: итого собрано {len(all_items)} предложений")
+        return all_items
 
 
     # ─────────────────────────────────────────────────────────────────────────
