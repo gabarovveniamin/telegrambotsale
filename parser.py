@@ -471,50 +471,38 @@ class DiscountParser:
                 if not raw:
                     break
 
-                # Извлекаем JSON объект из JS файла
-                try:
-                    match = re.search(r'(\{.*\})', raw, re.DOTALL)
-                    if not match:
-                        break
-                    
-                    data = json.loads(match.group(1))
-                except Exception:
-                    items_match = re.search(
-                        r'"(?:items|products|goods|data)"\s*:\s*(\[.*?\])',
-                        raw, re.DOTALL
-                    )
-                    if not items_match:
-                        break
-                    try:
-                        items = json.loads(items_match.group(1))
-                        data = {"items": items}
-                    except:
-                        break
-
-                items = (
-                    data.get("items") or
-                    data.get("products") or
-                    data.get("goods") or
-                    data.get("data") or
-                    []
+                # В Nuxt 3 Payload данные могут быть невалидным JSON для Python
+                # (из-за переменных типа category_id: $,), поэтому используемRegex.
+                # Ищем блоки, содержащие title, link_url, price и oldPrice
+                # Паттерн ищет "title":"...", "link_url":"...", "price":..., "oldPrice":...
+                items_data = re.findall(
+                    r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?sku\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
+                    raw, re.DOTALL
                 )
 
-                if not items:
-                    break
+                if not items_data:
+                    # Попробуем альтернативный паттерн без SKU, если первый не сработал
+                    items_data = re.findall(
+                        r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
+                        raw, re.DOTALL
+                    )
 
                 found_on_page = 0
-                for item in items:
-                    sku     = str(item.get("sku") or item.get("id") or "").strip()
-                    title   = (item.get("title") or item.get("name") or "").strip()
-                    new_p   = item.get("price")
-                    old_p   = item.get("oldPrice") or item.get("old_price")
-                    link    = item.get("link_url") or item.get("url") or ""
+                for entry in items_data:
+                    if len(entry) == 5:
+                        title, link, sku, new_p, old_p = entry
+                    else:
+                        title, link, new_p, old_p = entry
+                        sku = f"{hash(title)}" # фолбэк для ID
 
-                    if not (sku and title and new_p and old_p):
-                        continue
-                    
+                    # Очищаем title от юникод-экранирования типа \u002F
+                    title = title.encode('utf-8').decode('unicode-escape')
+                    link = link.encode('utf-8').decode('unicode-escape')
+
                     try:
-                        if float(old_p) <= float(new_p):
+                        new_f = float(new_p)
+                        old_f = float(old_p)
+                        if old_f <= new_f:
                             continue
                     except:
                         continue
@@ -533,9 +521,9 @@ class DiscountParser:
                     result.append({
                         "id":        uid,
                         "title":     title,
-                        "old_price": fmt_price(int(float(old_p))),
-                        "new_price": fmt_price(int(float(new_p))),
-                        "discount":  calc_discount(old_p, new_p),
+                        "old_price": fmt_price(int(old_f)),
+                        "new_price": fmt_price(int(new_f)),
+                        "discount":  calc_discount(old_f, new_f),
                         "link":      full_link,
                         "shop":      "Alser",
                     })
@@ -543,10 +531,11 @@ class DiscountParser:
 
                 logger.info(f"Alser [{category}] page {page}: найдено {found_on_page} товаров")
 
-                if len(items) < PAGE_SIZE:
+                # Если на странице ничего не нашли, скорее всего категорий больше нет
+                if found_on_page == 0:
                     break
 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
 
         logger.info(f"Alser: итого найдено {len(result)} акций")
         return result
