@@ -369,27 +369,68 @@ class DiscountParser:
         }
         for page in range(0, MAX_PAGES):  # Kaspi нумерует с 0
             params = {
-        async def fetch_category_alser(self, session: AsyncSession, category: str, sem: asyncio.Semaphore, seen_ids: set) -> List[Dict[str, Any]]:
+                "q":        ":discountDesc",
+                "cityId":   CITY_ID_KASPI,
+                "page":     page,
+                "pageSize": PAGE_SIZE,
+            }
+            r = await safe_request(
+                session, "GET",
+                "https://kaspi.kz/yml/offer-service/api/v1/offers",
+                headers=headers, params=params,
+            )
+            if r is None: break
+
+            try:
+                data = r.json()
+            except: break
+
+            inner  = data.get("data") or data
+            offers = inner.get("offers") or inner.get("items") or []
+            total  = inner.get("total") or 0
+            if not offers: break
+
+            for o in offers:
+                pid   = str(o.get("id") or o.get("offerId") or "").strip()
+                title = (o.get("name") or o.get("title") or "").strip()
+                slug  = (o.get("slug") or o.get("productCode") or pid).strip()
+                p_i   = o.get("unitPrice") or o
+                new_p = p_i.get("price") or p_i.get("sellPrice") or o.get("price")
+                old_p = p_i.get("basePrice") or p_i.get("oldPrice") or p_i.get("priceBeforeDiscount")
+
+                if not (pid and title and old_p and str(old_p) != str(new_p)): continue
+
+                result.append({
+                    "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
+                    "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
+                    "link": f"https://kaspi.kz/shop/p/{slug}-{pid}/", "shop": "Kaspi",
+                })
+
+            if total and (page + 1) * PAGE_SIZE >= total: break
+
+        logger.info(f"Kaspi: найдено {len(result)} акций")
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  ALSER
+    # ─────────────────────────────────────────────────────────────────────────
+    async def fetch_category_alser(self, session: AsyncSession, category: str, sem: asyncio.Semaphore, seen_ids: set) -> List[Dict[str, Any]]:
         """Парсинг категории Alser с глубоким поиском."""
         result = []
         async with sem:
-            # Парсим только первые 2 страницы в каждой категории для баланса скорости и охвата
             for page in range(1, 4): 
                 url = f"https://alser.kz/c/{category}/_payload.js" if page == 1 else f"https://alser.kz/c/{category}/_payload.js?page={page}"
-                
                 headers = {**self.base_headers, "Accept": "*/*", "Referer": "https://alser.kz/", "Sec-Fetch-Dest": "script"}
                 try:
                     r = await session.get(url, headers=headers, timeout=12)
                     if r.status_code != 200 or not r.text: break
+                    raw = r.text
                 except: break
 
-                raw = r.text
                 blocks = re.split(r'\{\s*"?id"?\s*:', raw)
-                
                 found_on_page = 0
                 for block in blocks:
-                    if "oldPrice" not in block and "old_price" not in block:
-                        continue
+                    if "oldPrice" not in block and "old_price" not in block: continue
                     
                     try:
                         title_m = re.search(r'title\s*:\s*"(.*?)"', block)
@@ -398,8 +439,7 @@ class DiscountParser:
                         price_m = re.search(r'price\s*:\s*(\d+)', block)
                         old_p_m = re.search(r'(?:oldPrice|old_price)\s*:\s*(\d+)', block)
 
-                        if not (title_m and price_m and old_p_m):
-                            continue
+                        if not (title_m and price_m and old_p_m): continue
 
                         title = title_m.group(1).replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"')
                         link = link_m.group(1).replace('\\u002f', '/').replace('\\u002F', '/') if link_m else ""
@@ -421,107 +461,35 @@ class DiscountParser:
                         })
                         found_on_page += 1
                     except: continue
-
                 if found_on_page == 0: break
         return result
 
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Alser.kz — динамический сбор категорий и товаров.
-        """
-        # Шаг 1: Получаем список ВСЕХ актуальных категорий через API
+        """ДИНАМИЧЕСКИЙ сбор категорий Alser."""
         catalog_url = "https://alser.kz/api/v2/catalog-full?location_id=8&lang=ru"
         categories = set()
-        
         try:
             r = await session.get(catalog_url, headers=self.base_headers, timeout=15)
             if r.status_code == 200:
-                data = r.json()
-                # Рекурсивно вытаскиваем все keyword из дерева категорий
                 def collect_keywords(items):
                     for item in items:
                         kw = item.get("keyword")
                         if kw: categories.add(kw)
                         if "subcategories" in item: collect_keywords(item["subcategories"])
                         if "children" in item: collect_keywords(item["children"])
-                
-                collect_keywords(data.get("data", []))
-        except Exception as e:
-            logger.error(f"Failed to fetch Alser catalog tree: {e}")
-            # Фолбэк если API упало
+                collect_keywords(r.json().get("data", []))
+        except:
             categories = {"smartfony-i-planshety", "noutbuki-i-kompyutery", "televizory", "bytovaya-tehnika"}
 
         logger.info(f"Alser: обнаружено {len(categories)} динамических категорий")
+        seen_ids, sem = set(), asyncio.Semaphore(5)
         
-        seen_ids = set()
-        sem = asyncio.Semaphore(5)
-        
-        # Запускаем сбор (ограничим до самых весомых категорий для скорости если их слишком много)
-        tasks = [self.fetch_category_alser(session, cat, sem, seen_ids) for cat in list(categories)[:50]]
+        # Берем первые 60 категорий (самые интересные обычно в начале/середине)
+        tasks = [self.fetch_category_alser(session, cat, sem, seen_ids) for cat in list(categories)[:60]]
         results = await asyncio.gather(*tasks)
         
         all_items = [item for sublist in results for item in sublist]
         logger.info(f"Alser: итого собрано {len(all_items)} предложений")
-        
-        all_items.sort(key=lambda x: x.get("discount", 0), reverse=True)
-        return all_items
-rice_m and old_p_m):
-                            continue
-
-                        title = title_m.group(1).replace('\\"', '"')
-                        link = link_m.group(1) if link_m else ""
-                        sku = sku_m.group(1) if sku_m else str(hash(title))
-                        new_p, old_p = price_m.group(1), old_p_m.group(1)
-
-                        new_f, old_f = float(new_p), float(old_p)
-                        if old_f <= new_f: continue
-
-                        uid = f"al_{sku}"
-                        if uid in seen_ids: continue
-                        seen_ids.add(uid)
-
-                        # Чистим title и link
-                        title = title.replace('\\u002f', '/').replace('\\u002F', '/')
-                        link = link.replace('\\u002f', '/').replace('\\u002F', '/')
-
-                        result.append({
-                            "id": uid, "title": title, "old_price": fmt_price(int(old_f)),
-                            "new_price": fmt_price(int(new_f)), "discount": calc_discount(old_f, new_f),
-                            "link": f"https://alser.kz{link}" if link.startswith("/") else link or f"https://alser.kz/c/{category}",
-                            "shop": "Alser"
-                        })
-                        found_on_page += 1
-                    except: continue
-
-                if found_on_page == 0:
-                    break
-                
-        return result
-
-    async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Alser.kz — расширенный параллельный парсинг.
-        """
-        categories = [
-            # Гаджеты и телефоны
-            "smartfony", "planshety", "naushniki", "smart-chasy", "portativnye-kolonki",
-            # Компьютеры
-            "noutbuki", "monitory", "kompjutery", "igrovye-konsoli", "myshy", "klaviatury",
-            # Бытовая техника
-            "televizory", "holodilniki", "stiralnye-mashiny", "varochnye-paneli", "duhovye-shkafy", 
-            "pylesosy", "posudomoechnye-mashiny", "mikrovolnovye-pechi", "multivarki", 
-            "elektrochajniki", "kofemashiny", "feny-i-stajlery", "epiljatory", "elektroplyty", "kondicionery"
-        ]
-        
-        seen_ids = set()
-        sem = asyncio.Semaphore(5) # 5 потоков
-        
-        tasks = [self.fetch_category_alser(session, cat, sem, seen_ids) for cat in categories]
-        results = await asyncio.gather(*tasks)
-        
-        all_items = [item for sublist in results for item in sublist]
-        logger.info(f"Alser: итого собрано {len(all_items)} предложений из {len(categories)} категорий")
-        
         all_items.sort(key=lambda x: x.get("discount", 0), reverse=True)
         return all_items
 
