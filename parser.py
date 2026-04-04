@@ -432,7 +432,7 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
-        Alser.kz — парсинг HTML страницы акций /actions
+        Alser.kz — парсинг HTML страницы акций /promos
         (JSON API /api/v2/promos заблокирован CloudFlare, 403).
         """
         result:   List[Dict[str, Any]] = []
@@ -445,7 +445,7 @@ class DiscountParser:
         }
 
         for page in range(1, MAX_PAGES + 1):
-            url = f"https://alser.kz/actions/?page={page}" if page > 1 else "https://alser.kz/actions/"
+            url = f"https://alser.kz/promos?page={page}" if page > 1 else "https://alser.kz/promos"
             r = await safe_request(session, "GET", url, headers=headers, timeout=30)
             if r is None:
                 break
@@ -505,7 +505,7 @@ class DiscountParser:
                     continue
                 seen_ids.add(uid)
 
-                full_link = f"https://alser.kz{link_path}" if link_path.startswith("/") else link_path or "https://alser.kz/actions/"
+                full_link = f"https://alser.kz{link_path}" if link_path.startswith("/") else link_path or "https://alser.kz/promos"
 
                 result.append({
                     "id":        uid,
