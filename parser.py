@@ -355,10 +355,11 @@ class DiscountParser:
         """
         result: List[Dict[str, Any]] = []
 
-        # Прогрев — получаем куки сессии
+        # Легкий прогрев
         await safe_request(
-            session, "GET", "https://kaspi.kz/",
-            headers={**self.base_headers, "Accept": "text/html,*/*"}
+            session, "GET", "https://kaspi.kz/shop/c/smartphones/",
+            headers={**self.base_headers, "Accept": "text/html,*/*"},
+            timeout=10
         )
 
         headers = {
@@ -369,14 +370,14 @@ class DiscountParser:
         }
         for page in range(0, MAX_PAGES):  # Kaspi нумерует с 0
             params = {
-                # Формат q из твоего скриншота: город + категория (all) + сортировка
                 "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
+                "c":        CITY_ID_KASPI, # Город из скриншота
             }
             r = await safe_request(
                 session, "GET",
-                "https://kaspi.kz/yml/offer-service/api/v1/search/filters",
+                "https://kaspi.kz/yml/product-view/pl/filters",
                 headers=headers, params=params,
             )
             if r is None: break
