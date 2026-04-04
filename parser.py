@@ -429,38 +429,47 @@ class DiscountParser:
     #  ALSER
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_category_alser(self, session: AsyncSession, category: str, sem: asyncio.Semaphore, seen_ids: set) -> List[Dict[str, Any]]:
-        """Парсинг конкретной категории Alser."""
+        """Парсинг конкретной категории Alser с защитой от зависания."""
         result = []
         async with sem:
-            for page in range(1, MAX_PAGES + 1):
+            for page in range(1, 3): # Сократим до 2 страниц для скорости
                 url = f"https://alser.kz/c/{category}/_payload.js" if page == 1 else f"https://alser.kz/c/{category}/_payload.js?page={page}"
                 
                 headers = {**self.base_headers, "Accept": "*/*", "Referer": "https://alser.kz/", "Sec-Fetch-Dest": "script"}
-                r = await safe_request(session, "GET", url, headers=headers, timeout=25)
-                if not r or not r.text:
-                    break
+                
+                # Короткий таймаут и 1 попытка для фонового сбора
+                try:
+                    r = await session.get(url, headers=headers, timeout=12)
+                    if r.status_code != 200 or not r.text: break
+                except: break
 
                 raw = r.text
-                # Паттерн для извлечения данных
-                items_data = re.findall(
-                    r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?sku\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
-                    raw, re.DOTALL
-                )
-
-                if not items_data:
-                    # Запасной паттерн (без SKU)
-                    items_data = re.findall(
-                        r'title\s*:\s*"(.*?)".*?link_url\s*:\s*"(.*?)".*?price\s*:\s*(\d+).*?oldPrice\s*:\s*(\d+)',
-                        raw, re.DOTALL
-                    )
-
+                
+                # Ищем блоки объектов через разделитель (например, по ID или SKU)
+                # Это НАМНОГО быстрее чем одна огромная регулярка с DOTALL
+                # Сначала находим все куски текста, похожие на товары
+                blocks = re.split(r'\{[^{]*?id\s*:', raw)
+                
                 found_on_page = 0
-                for entry in items_data:
-                    if len(entry) == 5:
-                        title, link, sku, new_p, old_p = entry
-                    else:
-                        title, link, new_p, old_p = entry
-                        sku = f"id_{hash(title)}"
+                for block in blocks:
+                    if "price" not in block or "oldPrice" not in block:
+                        continue
+                    
+                    # Извлекаем поля индивидуально (без жадных .*?)
+                    title_m = re.search(r'title\s*:\s*"(.*?)"', block)
+                    link_m = re.search(r'link_url\s*:\s*"(.*?)"', block)
+                    sku_m = re.search(r'sku\s*:\s*"(.*?)"', block)
+                    price_m = re.search(r'price\s*:\s*(\d+)', block)
+                    old_p_m = re.search(r'oldPrice\s*:\s*(\d+)', block)
+
+                    if not (title_m and price_m and old_p_m):
+                        continue
+
+                    title = title_m.group(1)
+                    link = link_m.group(1) if link_m else ""
+                    sku = sku_m.group(1) if sku_m else str(hash(title))
+                    new_p = price_m.group(1)
+                    old_p = old_p_m.group(1)
 
                     try:
                         new_f, old_f = float(new_p), float(old_p)
@@ -471,6 +480,7 @@ class DiscountParser:
                     if uid in seen_ids: continue
                     seen_ids.add(uid)
 
+                    # Чистим от экранирования
                     title = title.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"')
                     link = link.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"')
 
@@ -484,7 +494,6 @@ class DiscountParser:
 
                 if found_on_page == 0:
                     break
-                await asyncio.sleep(0.1)
                 
         logger.info(f"Alser [{category}]: найдено {len(result)} акций")
         return result
@@ -492,23 +501,25 @@ class DiscountParser:
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
         Alser.kz — параллельный парсинг категорий через _payload.js.
+        Оптимизирован для скорости и отсутствия блокировок.
         """
         categories = [
-            "smartfony", "noutbuki", "planshety", "televizory", "monitory", 
-            "kompjutery", "akustika", "naushniki", "igrovye-konsoli", 
-            "myshy", "klaviatury", "holodilniki", "stiralnye-mashiny", 
-            "varochnye-paneli", "duhovye-shkafy", "pylesosy", "multivarki",
-            "feny-i-stajlery", "epiljatory"
+            "smartfony", "noutbuki", "televizory", "holodilniki", 
+            "stiralnye-mashiny", "pylesosy", "planshety", "naushniki"
         ]
         
         seen_ids = set()
-        sem = asyncio.Semaphore(4) # Ограничиваем до 4 категорий параллельно
+        # Семафор на 2 параллельных задачи (чтобы не перегружать CPU на парсинге строк)
+        sem = asyncio.Semaphore(2) 
         
         tasks = [self.fetch_category_alser(session, cat, sem, seen_ids) for cat in categories]
         results = await asyncio.gather(*tasks)
         
         all_items = [item for sublist in results for item in sublist]
         logger.info(f"Alser: итого собрано {len(all_items)} предложений")
+        
+        # Сортируем по размеру скидки
+        all_items.sort(key=lambda x: x.get("discount", 0), reverse=True)
         return all_items
 
 
