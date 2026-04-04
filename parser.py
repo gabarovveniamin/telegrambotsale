@@ -376,7 +376,7 @@ class DiscountParser:
             }
             r = await safe_request(
                 session, "GET",
-                "https://kaspi.kz/yml/offer-service/api/v1/filters",
+                "https://kaspi.kz/yml/offer-service/api/v1/search/filters",
                 headers=headers, params=params,
             )
             if r is None: break
