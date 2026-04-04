@@ -261,8 +261,13 @@ class DiscountParser:
 
         headers = {
             **self.base_headers,
-            "x-city": CITY_SLUG_MECHTA, 
-            "Referer": "https://www.mechta.kz/"
+            "x-city":          CITY_SLUG_MECHTA, 
+            "Referer":         "https://www.mechta.kz/",
+            "Origin":          "https://www.mechta.kz",
+            "Host":            "www.mechta.kz",
+            "Sec-Fetch-Dest":  "empty",
+            "Sec-Fetch-Mode":  "cors",
+            "Sec-Fetch-Site":  "same-origin",
         }
 
         # Самые популярные категории для парсинга
@@ -368,12 +373,16 @@ class DiscountParser:
             "X-KS-City":        CITY_ID_KASPI,
             "X-Requested-With": "XMLHttpRequest",
         }
-        for page in range(0, MAX_PAGES):  # Kaspi нумерует с 0
+        for page in range(0, MAX_PAGES):
             params = {
-                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc",
+                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc:all",
+                "full":     "false",
+                "sort":     "relevance",
+                "ui":       "d",
+                "i":        "-1",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
-                "c":        CITY_ID_KASPI, # Город из скриншота
+                "c":        CITY_ID_KASPI,
             }
             r = await safe_request(
                 session, "GET",
