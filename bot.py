@@ -598,6 +598,85 @@ async def cmd_sale(message: types.Message):
     await message.answer("✅ <b>Вывод завершён!</b>", parse_mode="HTML")
 
 
+@router.message(Command("salekaspi"))
+async def cmd_salekaspi(message: types.Message):
+    """Команда для вывода акций Каспи."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Kaspi...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_kaspi(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Kaspi."); return
+
+    header = f"🔵 <b>Скидки Kaspi (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
+@router.message(Command("salealser"))
+async def cmd_salealser(message: types.Message):
+    """Команда для вывода акций Alser."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Alser...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_alser(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Alser."); return
+
+    header = f"🟢 <b>Скидки Alser (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
+@router.message(Command("salemechta"))
+async def cmd_salemechta(message: types.Message):
+    """Команда для вывода акций Mechta."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Mechta...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_mechta(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Mechta."); return
+
+    header = f"🔵 <b>Скидки Mechta (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
+async def send_sale_chunks(message, items, header):
+    """Вспомогательная функция для отправки товаров кусками."""
+    lines = [header]
+    for item in items[:40]: # Ограничим до 40 самых жирных скидок для скорости
+        price_line = f"<s>{item['old_price']}</s> → <b>{item['new_price']}</b>"
+        title = item["title"][:57] + "..." if len(item["title"]) > 60 else item["title"]
+        lines.append(f"• <a href='{item['link']}'>{title}</a> (-{item['discount']}%)\n  {price_line}\n")
+
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) > 4000:
+            await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
+            chunk = line
+        else: chunk += line
+    if chunk:
+        await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
+    await message.answer("✅ <b>Вывод завершён!</b>", parse_mode="HTML")
+
+
 @router.message(Command("salealser"))
 async def cmd_salealser(message: types.Message):
     """Скидки с Alser."""
