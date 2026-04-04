@@ -493,11 +493,18 @@ class DiscountParser:
                         title, link, sku, new_p, old_p = entry
                     else:
                         title, link, new_p, old_p = entry
-                        sku = f"{hash(title)}" # фолбэк для ID
+                        sku = f"{hash(title)}" 
 
-                    # Очищаем title от юникод-экранирования типа \u002F
-                    title = title.encode('utf-8').decode('unicode-escape')
-                    link = link.encode('utf-8').decode('unicode-escape')
+                    # Безопасная очистка строк от юникод-символов типа \u002F
+                    def safe_clean(s: str) -> str:
+                        try:
+                            # Python 3 требует аккуратной обработки слешей
+                            return s.replace('\\u002f', '/').replace('\\u002F', '/').replace('\\"', '"').replace('\\\\', '\\')
+                        except:
+                            return s
+
+                    title = safe_clean(title)
+                    link = safe_clean(link)
 
                     try:
                         new_f = float(new_p)
