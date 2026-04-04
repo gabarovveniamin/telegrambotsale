@@ -345,22 +345,9 @@ class DiscountParser:
     #  KASPI
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Kaspi.kz — товары со скидкой, сортировка по убыванию скидки.
-
-        Эндпоинт (нашли через DevTools):
-          GET /yml/offer-service/api/v1/offers
-              ?q=:discountDesc&cityId=750000000&page=0&pageSize=30
-
-        Сначала прогреваем сессию чтобы получить куки.
-
-        Если получаешь 403 — открой kaspi.kz в DevTools,
-        найди запрос к /yml/offer-service/ и скопируй
-        актуальные заголовки X-KS-City и Cookie.
-        """
         result: List[Dict[str, Any]] = []
 
-        # Легкий прогрев
+        # Прогрев сессии
         await safe_request(
             session, "GET", "https://kaspi.kz/shop/c/smartphones/",
             headers={**self.base_headers, "Accept": "text/html,*/*"},
@@ -369,17 +356,14 @@ class DiscountParser:
 
         headers = {
             **self.base_headers,
-            "Referer":          "https://kaspi.kz/shop/subdomain/all/categories/all/products/?q=%3AdiscountDesc",
-            "X-KS-City":        CITY_ID_KASPI,
+            "Referer": "https://kaspi.kz/shop/c/smartphones/",
+            "X-KS-City": CITY_ID_KASPI,
             "X-Requested-With": "XMLHttpRequest",
         }
+
         for page in range(0, MAX_PAGES):
             params = {
-                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc:all",
-                "full":     "false",
-                "sort":     "relevance",
-                "ui":       "d",
-                "i":        "-1",
+                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
                 "c":        CITY_ID_KASPI,
@@ -389,52 +373,62 @@ class DiscountParser:
                 "https://kaspi.kz/yml/product-view/pl/filters",
                 headers=headers, params=params,
             )
-            if r is None: break
+            if r is None:
+                break
 
             try:
                 data = r.json()
             except: break
 
-            # Обработка товаров
-            inner = data.get("data") or data
+            # Структура: { data: { cards: [...], total: N } }
+            inner = data.get("data") or {}
             if not isinstance(inner, dict):
-                logger.warning(f"Kaspi: inner is NOT a dict, it is {type(inner)}")
+                logger.warning(f"Kaspi: неожиданный формат ответа: {type(inner)}")
                 break
                 
-            offers = inner.get("cards") or inner.get("offers") or inner.get("items") or []
-            total  = inner.get("total") or 0
-            if not isinstance(offers, list):
-                logger.warning(f"Kaspi: offers is NOT a list, it is {type(offers)}")
+            cards = inner.get("cards") or []
+            total = inner.get("total") or 0
+
+            if not cards:
+                logger.warning(f"Kaspi page {page}: cards пустой")
                 break
 
-            for o in offers:
+            for o in cards:
                 if not isinstance(o, dict):
                     continue
                 
                 try:
-                    pid   = str(o.get("id") or o.get("offerId") or "").strip()
+                    pid   = str(o.get("id") or "").strip()
                     title = (o.get("title") or o.get("name") or "").strip()
                     slug  = (o.get("slug") or o.get("productCode") or pid).strip()
-                    
-                    # Безопасное получение объекта цены
-                    p_i = o.get("unitPrice")
-                    if not isinstance(p_i, dict):
-                        p_i = o
-                    
-                    new_p = o.get("price") or p_i.get("price") or p_i.get("sellPrice")
-                    old_p = o.get("oldPrice") or p_i.get("basePrice") or p_i.get("priceBeforeDiscount")
 
-                    if not (pid and title and new_p and old_p): continue
-                    if str(old_p) == str(new_p): continue
+                    # Цены — сначала смотрим unitPrice, потом корень
+                    unit  = o.get("unitPrice") or {}
+                    new_p = unit.get("price") or o.get("price")
+                    old_p = unit.get("priceBeforeDiscount") or o.get("oldPrice") or o.get("priceBeforeDiscount")
+
+                    if not (pid and title and new_p and old_p):
+                        continue
+                    
+                    try:
+                        if float(str(old_p)) <= float(str(new_p)):
+                            continue
+                    except: continue
 
                     result.append({
-                        "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
-                        "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
-                        "link": f"https://kaspi.kz/shop/p/{slug}-{pid}/", "shop": "Kaspi",
+                        "id":        f"kp_{pid}",
+                        "title":     title,
+                        "old_price": fmt_price(old_p),
+                        "new_price": fmt_price(new_p),
+                        "discount":  calc_discount(old_p, new_p),
+                        "link":      f"https://kaspi.kz/shop/p/{slug}-{pid}/",
+                        "shop":      "Kaspi",
                     })
                 except Exception as e:
-                    logger.error(f"Kaspi error on item: {e}")
+                    logger.error(f"Kaspi item error: {e}")
                     continue
+
+            logger.info(f"Kaspi page {page}: найдено {len(cards)} карточек")
 
             if total and (page + 1) * PAGE_SIZE >= total: break
 
