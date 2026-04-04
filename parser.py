@@ -172,67 +172,103 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     #  SULPAK
     # ─────────────────────────────────────────────────────────────────────────
-    async def fetch_sulpak(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-
-        for page in range(1, MAX_PAGES + 1):
-            url = (
-                f"https://www.sulpak.kz/SaleLoadProducts/{page}"
-                f"/~/~/0-2147483647/~/~/popularitydesc/tiles"
-            )
+    async def fetch_category_sulpak(self, session: AsyncSession, category: str, seen_ids: set) -> List[Dict[str, Any]]:
+        """Парсинг конкретной категории Sulpak."""
+        result = []
+        for page in range(1, 4):
+            url = f"https://www.sulpak.kz/f/{category}/almaty/?page={page}"
             headers = {
                 **self.base_headers,
-                "Accept": "application/json, text/plain, */*",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": "https://www.sulpak.kz/sale/",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": "https://www.sulpak.kz/",
             }
-            r = await safe_request(session, "POST", url, headers=headers)
-            if r is None:
-                break
-            try:
-                data = r.json()
-            except Exception as e:
-                logger.error(f"Sulpak JSON error (page {page}): {e}")
-                break
-
-            html = data.get("products", "")
-            if not html:
-                break
-
-            soup  = BeautifulSoup(html, "html.parser")
+            r = await safe_request(session, "GET", url, headers=headers)
+            if r is None: break
+            
+            soup = BeautifulSoup(r.text, "html.parser")
             cards = soup.select("div.product__item-js")
-            if not cards:
-                logger.warning(f"Sulpak page {page}: карточки не найдены")
-                break
-
+            if not cards: break
+            
             for card in cards:
                 title   = card.get("data-name", "").strip()
                 code    = card.get("data-code", "").strip()
                 new_p   = card.get("data-price", "").strip()
-                a_tag   = card.select_one("a.product__item-images")
-                slug    = a_tag["href"] if a_tag else ""
                 old_tag = card.select_one(".product__item-price-old")
                 old_p   = re.sub(r"[^\d]", "", old_tag.get_text()) if old_tag else ""
+                
+                if not (title and code and new_p and old_p): continue
+                if code in seen_ids: continue
+                seen_ids.add(code)
+                
+                try:
+                    if float(old_p) <= float(new_p): continue
+                except: continue
 
-                if not (title and code and slug and old_p):
-                    continue
-
-                new_p_clean = str(int(float(new_p))) if new_p else ""
+                a_tag = card.select_one("a.product__item-images")
+                link = f"https://www.sulpak.kz{a_tag['href']}" if a_tag else ""
+                
                 result.append({
                     "id":        f"sp_{code}",
                     "title":     title,
                     "old_price": fmt_price(old_p),
-                    "new_price": fmt_price(new_p_clean),
-                    "discount":  calc_discount(old_p, new_p_clean),
-                    "link":      f"https://www.sulpak.kz{slug}",
+                    "new_price": fmt_price(new_p),
+                    "discount":  calc_discount(old_p, new_p),
+                    "link":      link,
                     "shop":      "Sulpak",
                 })
+            
+            if len(cards) < 10: break
+            await asyncio.sleep(0.3)
+        return result
 
-            paginator = data.get("paginator", "")
-            if f"/{page + 1}/" not in paginator:
-                break
+    async def fetch_sulpak(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        """Сбор акций со всего каталога Sulpak по категориям."""
+        result: List[Dict[str, Any]] = []
+        seen_ids = set()
+        
+        # Сначала чекаем саму страницу акций
+        for page in range(1, 4):
+            url = f"https://www.sulpak.kz/SaleLoadProducts/{page}/~/~/0-2147483647/~/~/popularitydesc/tiles"
+            r = await safe_request(session, "POST", url, headers={"X-Requested-With": "XMLHttpRequest"})
+            if r is None: break
+            try:
+                data = r.json()
+                html = data.get("products", "")
+                if not html: break
+                soup = BeautifulSoup(html, "html.parser")
+                cards = soup.select("div.product__item-js")
+                for card in cards:
+                    title   = card.get("data-name", "").strip()
+                    code    = card.get("data-code", "").strip()
+                    new_p   = card.get("data-price", "").strip()
+                    old_tag = card.select_one(".product__item-price-old")
+                    old_p   = re.sub(r"[^\d]", "", old_tag.get_text()) if old_tag else ""
+                    
+                    if not (title and code and new_p and old_p): continue
+                    if code in seen_ids: continue
+                    seen_ids.add(code)
+                    
+                    try:
+                        if float(old_p) <= float(new_p): continue
+                    except: continue
+                    
+                    a_tag = card.select_one("a.product__item-images")
+                    link = f"https://www.sulpak.kz{a_tag['href']}" if a_tag else ""
+                    
+                    result.append({
+                        "id": f"sp_{code}", "title": title, "old_price": fmt_price(old_p),
+                        "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
+                        "link": link, "shop": "Sulpak",
+                    })
+            except: break
 
-        logger.info(f"Sulpak: найдено {len(result)} акций")
+        # Затем добавляем обход по популярным категориям
+        categories = ["smartfony", "noutbuki", "televizory", "holodilniki", "stiralniye_mashini", "pyilesosyi"]
+        for cat in categories:
+            res = await self.fetch_category_sulpak(session, cat, seen_ids)
+            result.extend(res)
+            
+        logger.info(f"Sulpak: итого со всех категорий {len(result)} акций")
         return result
 
     # ─────────────────────────────────────────────────────────────────────────

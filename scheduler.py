@@ -159,12 +159,13 @@ def setup_scheduler():
         next_run_time=datetime.now()
     )
 
-    # Точечная следилка (каждый час)
+    # Точечная следилка (каждые 5 минут)
     scheduler.add_job(
         run_personal_tracker_cycle,
         "interval",
-        minutes=60,
-        id="personal_tracker_job"
+        minutes=5,
+        id="personal_tracker_job",
+        next_run_time=datetime.now()
     )
 
     # Проверка подписок: предупреждения и деактивация (каждый час)
