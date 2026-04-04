@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 import re
 from typing import List, Dict, Any, Optional
 
@@ -366,7 +367,6 @@ class DiscountParser:
             "X-KS-City":        CITY_ID_KASPI,
             "X-Requested-With": "XMLHttpRequest",
         }
-
         for page in range(0, MAX_PAGES):  # Kaspi нумерует с 0
             params = {
                 "q":        ":discountDesc",
@@ -388,7 +388,6 @@ class DiscountParser:
                 logger.error(f"Kaspi JSON parse error (page {page}): {e}")
                 break
 
-            # Структура: { "data": { "offers": [...], "total": N } }
             inner  = data.get("data") or data
             offers = inner.get("offers") or inner.get("items") or []
             total  = inner.get("total") or 0
@@ -401,7 +400,6 @@ class DiscountParser:
                 title = (o.get("name") or o.get("title") or "").strip()
                 slug  = (o.get("slug") or o.get("productCode") or pid).strip()
 
-                # Цены могут лежать в unitPrice или напрямую, или как на скриншоте (price/priceBeforeDiscount)
                 price_info = o.get("unitPrice") or o
                 new_p = price_info.get("price") or price_info.get("sellPrice") or o.get("price")
                 old_p = price_info.get("basePrice") or price_info.get("oldPrice") or o.get("priceBeforeDiscount") or price_info.get("priceBeforeDiscount")
@@ -432,103 +430,127 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
-        Alser.kz — парсинг HTML страницы акций /promos
-        (JSON API /api/v2/promos заблокирован CloudFlare, 403).
+        Alser.kz — парсинг через _payload.js файлы категорий.
+        Это гораздо надежнее прямого парсинга HTML, так как данные приходят в структурированном виде.
         """
-        result:   List[Dict[str, Any]] = []
+        result: List[Dict[str, Any]] = []
         seen_ids: set = set()
+
+        # Популярные категории для мониторинга
+        categories = [
+            "noutbuki",
+            "smartfony", 
+            "televizory",
+            "holodilniki",
+            "stiralnye-mashiny",
+            "naushniki",
+            "planshetye-kompyutery",
+            "monitory",
+        ]
 
         headers = {
             **self.base_headers,
-            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept": "*/*",
             "Referer": "https://alser.kz/",
+            "Sec-Fetch-Dest": "script",
         }
 
-        for page in range(1, MAX_PAGES + 1):
-            url = f"https://alser.kz/promos?page={page}" if page > 1 else "https://alser.kz/promos"
-            r = await safe_request(session, "GET", url, headers=headers, timeout=30)
-            if r is None:
-                break
+        for category in categories:
+            for page in range(1, MAX_PAGES + 1):
+                # Формируем URL к файлу данных
+                if page == 1:
+                    url = f"https://alser.kz/c/{category}/_payload.js"
+                else:
+                    url = f"https://alser.kz/c/{category}/_payload.js?page={page}"
 
-            try:
-                soup = BeautifulSoup(r.text, "html.parser")
-            except Exception as e:
-                logger.error(f"Alser HTML parse error (page {page}): {e}")
-                break
+                r = await safe_request(session, "GET", url, headers=headers, timeout=30)
+                if r is None:
+                    break
 
-            # Карточки товаров — ищем любой блок с ценой и старой ценой
-            cards = (
-                soup.select("div.product-card")
-                or soup.select("div.product-item")
-                or soup.select("div[class*='product']")
-                or soup.select("article")
-            )
+                raw = r.text
+                if not raw:
+                    break
 
-            if not cards:
-                logger.warning(f"Alser page {page}: карточки не найдены, пробуем другой селектор")
-                # Попробуем найти любые цены на странице
-                cards = soup.select("li.catalog-item, .item-catalog, .goods-item")
+                # Извлекаем JSON объект из JS файла
+                try:
+                    match = re.search(r'(\{.*\})', raw, re.DOTALL)
+                    if not match:
+                        break
+                    
+                    data = json.loads(match.group(1))
+                except Exception:
+                    items_match = re.search(
+                        r'"(?:items|products|goods|data)"\s*:\s*(\[.*?\])',
+                        raw, re.DOTALL
+                    )
+                    if not items_match:
+                        break
+                    try:
+                        items = json.loads(items_match.group(1))
+                        data = {"items": items}
+                    except:
+                        break
 
-            if not cards:
-                break
-
-            found_on_page = 0
-            for card in cards:
-                # Ищем название
-                title_el = (
-                    card.select_one("a.product-card__name, .product__title, .product-name, h3 a, h2 a, .name a, a[class*='name'], a[class*='title']")
-                    or card.select_one("a")
+                items = (
+                    data.get("items") or
+                    data.get("products") or
+                    data.get("goods") or
+                    data.get("data") or
+                    []
                 )
-                title = title_el.get_text(strip=True) if title_el else ""
-                link_path = title_el.get("href", "") if title_el else ""
 
-                # Старая цена
-                old_el = card.select_one(
-                    ".product-card__old-price, .old-price, [class*='old'], del, s, strike, .price-old"
-                )
-                old_text = re.sub(r"[^\d]", "", old_el.get_text()) if old_el else ""
+                if not items:
+                    break
 
-                # Новая цена
-                new_el = card.select_one(
-                    ".product-card__price, .new-price, [class*='current'], [class*='price']:not([class*='old']), .price"
-                )
-                new_text = re.sub(r"[^\d]", "", new_el.get_text()) if new_el else ""
+                found_on_page = 0
+                for item in items:
+                    sku     = str(item.get("sku") or item.get("id") or "").strip()
+                    title   = (item.get("title") or item.get("name") or "").strip()
+                    new_p   = item.get("price")
+                    old_p   = item.get("oldPrice") or item.get("old_price")
+                    link    = item.get("link_url") or item.get("url") or ""
 
-                if not (title and old_text and new_text):
-                    continue
-                if old_text == new_text or int(old_text) <= int(new_text):
-                    continue
+                    if not (sku and title and new_p and old_p):
+                        continue
+                    
+                    try:
+                        if float(old_p) <= float(new_p):
+                            continue
+                    except:
+                        continue
 
-                # ID из ссылки
-                uid = f"al_{re.sub(r'[^a-z0-9]', '_', link_path.lower())[:40]}" if link_path else f"al_{title[:30]}"
-                if uid in seen_ids:
-                    continue
-                seen_ids.add(uid)
+                    uid = f"al_{sku}"
+                    if uid in seen_ids:
+                        continue
+                    seen_ids.add(uid)
 
-                full_link = f"https://alser.kz{link_path}" if link_path.startswith("/") else link_path or "https://alser.kz/promos"
+                    full_link = (
+                        f"https://alser.kz{link}"
+                        if link.startswith("/") else
+                        link or f"https://alser.kz/c/{category}"
+                    )
 
-                result.append({
-                    "id":        uid,
-                    "title":     title,
-                    "old_price": fmt_price(old_text),
-                    "new_price": fmt_price(new_text),
-                    "discount":  calc_discount(old_text, new_text),
-                    "link":      full_link,
-                    "shop":      "Alser",
-                })
-                found_on_page += 1
+                    result.append({
+                        "id":        uid,
+                        "title":     title,
+                        "old_price": fmt_price(int(float(old_p))),
+                        "new_price": fmt_price(int(float(new_p))),
+                        "discount":  calc_discount(old_p, new_p),
+                        "link":      full_link,
+                        "shop":      "Alser",
+                    })
+                    found_on_page += 1
 
-            logger.info(f"Alser page {page}: найдено {found_on_page} товаров")
+                logger.info(f"Alser [{category}] page {page}: найдено {found_on_page} товаров")
 
-            # Проверяем пагинацию
-            next_btn = soup.select_one("a[rel='next'], .pagination__next, a.next")
-            if not next_btn:
-                break
+                if len(items) < PAGE_SIZE:
+                    break
 
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
-        logger.info(f"Alser: найдено {len(result)} товаров со скидкой")
+        logger.info(f"Alser: итого найдено {len(result)} акций")
         return result
+
 
     # ─────────────────────────────────────────────────────────────────────────
     #  БЕЛЫЙ ВЕТЕР (SHOP.KZ)
