@@ -386,37 +386,45 @@ class DiscountParser:
                 data = r.json()
             except: break
 
-            # Ищем массив товаров в разных местах (структура Каспи часто меняется)
-            inner  = data.get("data") or data
+            # Обработка товаров
+            inner = data.get("data") or data
             if not isinstance(inner, dict):
-                inner = {"offers": []}
-            
+                logger.warning(f"Kaspi: inner is NOT a dict, it is {type(inner)}")
+                break
+                
             offers = inner.get("cards") or inner.get("offers") or inner.get("items") or []
-            total  = inner.get("total") or 0
-            if not offers: break
+            if not isinstance(offers, list):
+                logger.warning(f"Kaspi: offers is NOT a list, it is {type(offers)}")
+                break
 
             for o in offers:
-                # ЗАЩИТА: если вместо объекта пришел ID (int/str), пропускаем его
                 if not isinstance(o, dict):
                     continue
-
-                pid   = str(o.get("id") or o.get("offerId") or "").strip()
-                title = (o.get("title") or o.get("name") or "").strip()
-                slug  = (o.get("slug") or o.get("productCode") or pid).strip()
                 
-                # Цены могут быть в объекте unitPrice или прямо в корне
-                p_i   = o.get("unitPrice") or o
-                new_p = o.get("price") or p_i.get("price") or p_i.get("sellPrice")
-                old_p = o.get("oldPrice") or p_i.get("basePrice") or p_i.get("priceBeforeDiscount")
+                try:
+                    pid   = str(o.get("id") or o.get("offerId") or "").strip()
+                    title = (o.get("title") or o.get("name") or "").strip()
+                    slug  = (o.get("slug") or o.get("productCode") or pid).strip()
+                    
+                    # Безопасное получение объекта цены
+                    p_i = o.get("unitPrice")
+                    if not isinstance(p_i, dict):
+                        p_i = o
+                    
+                    new_p = o.get("price") or p_i.get("price") or p_i.get("sellPrice")
+                    old_p = o.get("oldPrice") or p_i.get("basePrice") or p_i.get("priceBeforeDiscount")
 
-                if not (pid and title): continue
-                if not old_p or str(old_p) == str(new_p): continue
+                    if not (pid and title and new_p and old_p): continue
+                    if str(old_p) == str(new_p): continue
 
-                result.append({
-                    "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
-                    "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
-                    "link": f"https://kaspi.kz/shop/p/{slug}-{pid}/", "shop": "Kaspi",
-                })
+                    result.append({
+                        "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
+                        "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
+                        "link": f"https://kaspi.kz/shop/p/{slug}-{pid}/", "shop": "Kaspi",
+                    })
+                except Exception as e:
+                    logger.error(f"Kaspi error on item: {e}")
+                    continue
 
             if total and (page + 1) * PAGE_SIZE >= total: break
 
