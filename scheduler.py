@@ -42,12 +42,11 @@ async def run_monitoring_cycle():
             except Exception:
                 percent = "?"
 
-            # Отправляем только если удалось посчитать скидку и она больше или равна 20%
-            if not isinstance(percent, int) or percent < 20:
+            # Отправляем только если удалось посчитать скидку и она не ничтожная (напр. > 5%)
+            if not isinstance(percent, int) or percent < 5:
                 continue
 
-
-            # Формируем сообщение в точности как в инструкции
+            # Формируем сообщение
             text = (
                 f"🆕 Новая скидка в {item['shop']}!\n\n"
                 f"🏷 <b>{item['title']}</b>\n"
@@ -56,8 +55,8 @@ async def run_monitoring_cycle():
                 f"🔗 <a href='{item['link']}'>Купить сейчас</a>"
             )
             
-            # Рассылка только Premium-пользователям
-            await broadcast_message(text, premium_only=True)
+            # Рассылка пользователям (Premium-only), чей порог скидки ниже или равен текущей
+            await broadcast_message(text, premium_only=True, min_discount=percent)
             sent_count += 1
             
         logger.info(f"Monitoring cycle finished. Sent {sent_count} notifications to Premium users.")

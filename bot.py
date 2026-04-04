@@ -163,17 +163,64 @@ async def cmd_settings(message: types.Message):
 
 @router.callback_query(F.data == "menu_settings")
 async def cb_settings(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    threshold = await db.get_user_threshold(user_id)
+    
     await callback.message.edit_text(
         "⚙️ <b>Настройки отслеживания</b>\n\n"
-        "Управляй магазинами, следилкой и подпиской.",
+        f"🎯 Текущий порог уведомлений: <b>от {threshold}% скидки</b>\n"
+        "Я буду присылать уведомления только если скидка больше или равна этому значению.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📉 Настроить порог скидки", callback_data="settings_threshold")],
             [InlineKeyboardButton(text="🛒 Выбрать магазины", callback_data="settings_shops")],
-            [InlineKeyboardButton(text="🎯 Добавить товар в следилку", callback_data="settings_track")],
+            [InlineKeyboardButton(text="🎯 Моя следилка (Kaspi)", callback_data="settings_track")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
         ]),
         parse_mode="HTML"
     )
     await callback.answer()
+
+@router.callback_query(F.data == "settings_threshold")
+async def cb_settings_threshold(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    current = await db.get_user_threshold(user_id)
+    
+    # Генерация кнопок для выбора порога
+    buttons = []
+    thresholds = [0, 5, 10, 20, 30, 40, 50, 70]
+    
+    row = []
+    for t in thresholds:
+        text = f"{t}%"
+        if t == current:
+            text = f"✅ {t}%"
+        
+        row.append(InlineKeyboardButton(text=text, callback_data=f"set_threshold_{t}"))
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+        
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в настройки", callback_data="menu_settings")])
+    
+    await callback.message.edit_text(
+        "🎯 <b>Настройка порога уведомлений</b>\n\n"
+        "Выбери минимальный процент скидки, при котором я должен прислать тебе уведомление.\n"
+        "<i>Например, если выберешь 20%, я не буду беспокоить тебя по скидкам 5-15%.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("set_threshold_"))
+async def cb_set_threshold(callback: types.CallbackQuery):
+    threshold = int(callback.data.split("_")[-1])
+    user_id = callback.from_user.id
+    
+    await db.set_user_threshold(user_id, threshold)
+    await callback.answer(f"✅ Порог установлен на {threshold}%", show_alert=True)
+    await cb_settings_threshold(callback)
 
 
 async def _show_settings(target, user_id: int):
@@ -592,12 +639,16 @@ async def cmd_salealser(message: types.Message):
 # Broadcast helper (used by scheduler)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def broadcast_message(text: str, premium_only: bool = False):
+async def broadcast_message(text: str, premium_only: bool = False, min_discount: int = 0):
     """
     Safe mass broadcast respecting Telegram API rate limits.
     premium_only=True — used for premium-exclusive notifications.
+    min_discount — only send to users whose threshold is <= this value.
     """
-    if premium_only:
+    if min_discount > 0:
+        # Фильтруем пользователей по их настройкам порога скидки
+        users = await db.get_users_with_threshold(min_discount, premium_only=premium_only)
+    elif premium_only:
         users = await db.get_premium_users()
     else:
         users = await db.get_all_users()

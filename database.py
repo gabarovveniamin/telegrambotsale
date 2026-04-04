@@ -49,12 +49,16 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id     BIGINT PRIMARY KEY,
                     username    TEXT,
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                    created_at  TIMESTAMPTZ DEFAULT NOW(),
+                    discount_threshold INTEGER DEFAULT 0
                 )
             """)
-            # Migration: add username column if it doesn't exist yet
+            # Migration: add columns
             await conn.execute("""
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_threshold INTEGER DEFAULT 0
             """)
 
             # ── Subscriptions ──────────────────────────────────────────────────
@@ -134,6 +138,34 @@ class Database:
             "INSERT INTO subscriptions (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
             user_id
         )
+
+    async def get_user_threshold(self, user_id: int) -> int:
+        """Get user's discount threshold (%) or 0 if not found."""
+        row = await self.pool.fetchrow("SELECT discount_threshold FROM users WHERE user_id = $1", user_id)
+        return row["discount_threshold"] if row else 0
+
+    async def set_user_threshold(self, user_id: int, threshold: int):
+        """Set user's discount threshold (%) (0-100)."""
+        await self.pool.execute(
+            "UPDATE users SET discount_threshold = $1 WHERE user_id = $2",
+            max(0, min(100, threshold)), user_id
+        )
+
+    async def get_users_with_threshold(self, min_discount: int, premium_only: bool = True) -> List[int]:
+        """Get all users (optionally premium only) whose threshold is met by min_discount."""
+        if premium_only:
+            query = """
+                SELECT u.user_id FROM users u
+                INNER JOIN subscriptions s ON u.user_id = s.user_id
+                WHERE u.discount_threshold <= $1
+                  AND s.is_active = TRUE
+                  AND (s.expires_at IS NULL OR s.expires_at > NOW())
+            """
+        else:
+            query = "SELECT user_id FROM users WHERE discount_threshold <= $1"
+        
+        rows = await self.pool.fetch(query, min_discount)
+        return [row["user_id"] for row in rows]
 
     async def get_all_users(self) -> List[int]:
         """All user IDs."""
