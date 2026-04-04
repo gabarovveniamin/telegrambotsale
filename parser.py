@@ -393,6 +393,7 @@ class DiscountParser:
                 break
                 
             offers = inner.get("cards") or inner.get("offers") or inner.get("items") or []
+            total  = inner.get("total") or 0
             if not isinstance(offers, list):
                 logger.warning(f"Kaspi: offers is NOT a list, it is {type(offers)}")
                 break
