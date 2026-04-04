@@ -391,14 +391,19 @@ class DiscountParser:
             if not offers: break
 
             for o in offers:
+                # Поддержка как старой структуры, так и новой (cards)
                 pid   = str(o.get("id") or o.get("offerId") or "").strip()
-                title = (o.get("name") or o.get("title") or "").strip()
+                title = (o.get("title") or o.get("name") or "").strip()
                 slug  = (o.get("slug") or o.get("productCode") or pid).strip()
+                
+                # Цены в новых картах могут быть в разных полях
                 p_i   = o.get("unitPrice") or o
-                new_p = p_i.get("price") or p_i.get("sellPrice") or o.get("price")
-                old_p = p_i.get("basePrice") or p_i.get("oldPrice") or p_i.get("priceBeforeDiscount")
+                new_p = o.get("price") or p_i.get("price") or p_i.get("sellPrice")
+                old_p = o.get("oldPrice") or p_i.get("basePrice") or p_i.get("priceBeforeDiscount")
 
-                if not (pid and title and old_p and str(old_p) != str(new_p)): continue
+                if not (pid and title): continue
+                # Если старой цены нет, Kaspi иногда не показывает скидку в этом API
+                if not old_p or str(old_p) == str(new_p): continue
 
                 result.append({
                     "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
@@ -579,6 +584,8 @@ class DiscountParser:
             results = await asyncio.gather(
                 self.fetch_technodom(session),
                 self.fetch_sulpak(session),
+                self.fetch_mechta(session),
+                self.fetch_kaspi(session),
                 self.fetch_alser(session),
                 self.fetch_shopkz(session),
                 return_exceptions=True,
