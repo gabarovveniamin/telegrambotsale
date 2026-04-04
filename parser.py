@@ -329,14 +329,6 @@ class DiscountParser:
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
 
-        # Прогрев
-        await safe_request(
-            session, "GET", "https://kaspi.kz/",
-            headers={**self.base_headers, "Accept": "text/html,*/*"},
-            timeout=15
-        )
-        await asyncio.sleep(1.5)
-
         api_headers = {
             **self.base_headers,
             "Accept": "application/json, text/plain, */*",
@@ -350,10 +342,11 @@ class DiscountParser:
 
         for page in range(0, MAX_PAGES):
             params = {
-                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc",
+                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc:all",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
                 "c":        CITY_ID_KASPI,
+                "sc":       "-1",
             }
             r = await safe_request(
                 session, "GET",
