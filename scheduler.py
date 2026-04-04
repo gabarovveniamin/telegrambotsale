@@ -42,8 +42,8 @@ async def run_monitoring_cycle():
             except Exception:
                 percent = "?"
 
-            # Отправляем только если удалось посчитать скидку и она больше или равна 10%
-            if not isinstance(percent, int) or percent < 10:
+            # Отправляем только если удалось посчитать скидку и она больше или равна 20%
+            if not isinstance(percent, int) or percent < 20:
                 continue
 
 
