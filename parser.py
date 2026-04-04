@@ -369,14 +369,14 @@ class DiscountParser:
         }
         for page in range(0, MAX_PAGES):  # Kaspi нумерует с 0
             params = {
-                "q":        ":discountDesc",
-                "cityId":   CITY_ID_KASPI,
+                # Формат q из твоего скриншота: город + категория (all) + сортировка
+                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
             }
             r = await safe_request(
                 session, "GET",
-                "https://kaspi.kz/yml/offer-service/api/v1/offers",
+                "https://kaspi.kz/yml/offer-service/api/v1/filters",
                 headers=headers, params=params,
             )
             if r is None: break
@@ -385,8 +385,9 @@ class DiscountParser:
                 data = r.json()
             except: break
 
+            # Данные теперь в data['data']['cards'] или просто data['cards']
             inner  = data.get("data") or data
-            offers = inner.get("offers") or inner.get("items") or []
+            offers = inner.get("cards") or inner.get("offers") or []
             total  = inner.get("total") or 0
             if not offers: break
 
