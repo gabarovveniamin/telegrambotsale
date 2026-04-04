@@ -394,6 +394,7 @@ class DiscountParser:
 
             cards = inner.get("cards") or []
             total = inner.get("total") or 0
+            logger.warning(f"KASPI_DEBUG type={type(cards)} len={len(cards)} sample={str(cards[:2])[:600]}")
 
             if not cards:
                 logger.warning(f"Kaspi page {page}: cards пустой, total={total}")
