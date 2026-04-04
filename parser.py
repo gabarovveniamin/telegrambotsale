@@ -327,37 +327,20 @@ class DiscountParser:
     #  KASPI
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Kaspi отдаёт 400 на /yml/product-view/pl/filters без правильных куков.
-        Алгоритм:
-          1. Прогрев — GET главной страницы категории (получаем куки сессии)
-          2. GET /yml/product-view/pl/filters с корректными параметрами
-        
-        Параметр q взят напрямую из DevTools (скриншот):
-          :availableInZones:750000000:all:discountDesc
-        """
         result: List[Dict[str, Any]] = []
 
-        # ── Шаг 1: прогрев (обязателен для получения куков Kaspi) ──
-        warmup_headers = {
-            **self.base_headers,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-        }
+        # Прогрев
         await safe_request(
-            session, "GET",
-            "https://kaspi.kz/shop/subdomain/all/categories/all/products/?q=%3AdiscountDesc",
-            headers=warmup_headers, timeout=15
+            session, "GET", "https://kaspi.kz/",
+            headers={**self.base_headers, "Accept": "text/html,*/*"},
+            timeout=15
         )
         await asyncio.sleep(1.5)
 
-        # ── Шаг 2: запросы к API ──
         api_headers = {
             **self.base_headers,
             "Accept": "application/json, text/plain, */*",
-            "Referer": "https://kaspi.kz/shop/subdomain/all/categories/all/products/?q=%3AdiscountDesc",
+            "Referer": "https://kaspi.kz/",
             "X-KS-City": CITY_ID_KASPI,
             "X-Requested-With": "XMLHttpRequest",
             "Sec-Fetch-Dest": "empty",
@@ -383,44 +366,38 @@ class DiscountParser:
             try:
                 data = r.json()
             except Exception as e:
-                logger.error(f"Kaspi JSON error page {page}: {e}")
+                logger.error(f"Kaspi JSON error: {e}")
                 break
 
-            # Структура ответа: { data: { cards: [...], total: N } }
             inner = data.get("data")
             if not isinstance(inner, dict):
-                logger.warning(f"Kaspi: неожиданный формат: {str(data)[:200]}")
                 break
 
             cards = inner.get("cards") or []
             total = inner.get("total") or 0
-            logger.warning(f"KASPI_DEBUG type={type(cards)} len={len(cards)} sample={str(cards[:2])[:600]}")
 
             if not cards:
-                logger.warning(f"Kaspi page {page}: cards пустой, total={total}")
                 break
 
             for o in cards:
                 if not isinstance(o, dict):
                     continue
                 try:
-                    pid   = str(o.get("id") or "").strip()
-                    title = (o.get("title") or o.get("name") or "").strip()
-                    slug  = (o.get("slug") or o.get("productCode") or pid).strip()
+                    pid      = str(o.get("id") or "").strip()
+                    title    = (o.get("title") or o.get("name") or "").strip()
+                    shop_link = o.get("shopLink") or ""
 
-                    # Цены лежат в unitPrice{}
-                    unit  = o.get("unitPrice") or {}
-                    new_p = unit.get("price") or o.get("price")
-                    old_p = (
-                        unit.get("priceBeforeDiscount")
-                        or o.get("priceBeforeDiscount")
-                        or o.get("oldPrice")
-                    )
+                    # unitPrice и unitSalePrice — это числа (int), не объекты!
+                    old_p = o.get("unitPrice")
+                    new_p = o.get("unitSalePrice")
 
-                    if not (pid and title and new_p and old_p):
+                    if not (pid and title and old_p and new_p):
                         continue
-                    if float(str(old_p)) <= float(str(new_p)):
+                    if int(old_p) <= int(new_p):
                         continue
+
+                    # Строим ссылку из shopLink
+                    link = f"https://kaspi.kz{shop_link}" if shop_link else f"https://kaspi.kz/shop/p/{pid}/"
 
                     result.append({
                         "id":        f"kp_{pid}",
@@ -428,14 +405,14 @@ class DiscountParser:
                         "old_price": fmt_price(old_p),
                         "new_price": fmt_price(new_p),
                         "discount":  calc_discount(old_p, new_p),
-                        "link":      f"https://kaspi.kz/shop/p/{slug}-{pid}/",
+                        "link":      link,
                         "shop":      "Kaspi",
                     })
                 except Exception as e:
                     logger.error(f"Kaspi item error: {e}")
                     continue
 
-            logger.info(f"Kaspi page {page}: получено {len(cards)} карточек")
+            logger.info(f"Kaspi page {page}: {len(cards)} карточек, добавлено {len(result)}")
 
             if total and (page + 1) * PAGE_SIZE >= total:
                 break
@@ -644,7 +621,7 @@ class DiscountParser:
             results = await asyncio.gather(
                 self.fetch_technodom(session),
                 self.fetch_sulpak(session),
-                self.fetch_mechta(session),
+                # self.fetch_mechta(session),
                 self.fetch_kaspi(session),
                 self.fetch_alser(session),
                 self.fetch_shopkz(session),
