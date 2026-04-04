@@ -386,25 +386,30 @@ class DiscountParser:
                 data = r.json()
             except: break
 
-            # Данные теперь в data['data']['cards'] или просто data['cards']
+            # Ищем массив товаров в разных местах (структура Каспи часто меняется)
             inner  = data.get("data") or data
-            offers = inner.get("cards") or inner.get("offers") or []
+            if not isinstance(inner, dict):
+                inner = {"offers": []}
+            
+            offers = inner.get("cards") or inner.get("offers") or inner.get("items") or []
             total  = inner.get("total") or 0
             if not offers: break
 
             for o in offers:
-                # Поддержка как старой структуры, так и новой (cards)
+                # ЗАЩИТА: если вместо объекта пришел ID (int/str), пропускаем его
+                if not isinstance(o, dict):
+                    continue
+
                 pid   = str(o.get("id") or o.get("offerId") or "").strip()
                 title = (o.get("title") or o.get("name") or "").strip()
                 slug  = (o.get("slug") or o.get("productCode") or pid).strip()
                 
-                # Цены в новых картах могут быть в разных полях
+                # Цены могут быть в объекте unitPrice или прямо в корне
                 p_i   = o.get("unitPrice") or o
                 new_p = o.get("price") or p_i.get("price") or p_i.get("sellPrice")
                 old_p = o.get("oldPrice") or p_i.get("basePrice") or p_i.get("priceBeforeDiscount")
 
                 if not (pid and title): continue
-                # Если старой цены нет, Kaspi иногда не показывает скидку в этом API
                 if not old_p or str(old_p) == str(new_p): continue
 
                 result.append({
