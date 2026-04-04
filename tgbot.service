@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Discount Monitor Bot
+After=network.target
+
+[Service]
+User=venag
+Group=venag
+WorkingDirectory=/home/venag/telegrambotsale
+ExecStart=/home/venag/telegrambotsale/venv/bin/python main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/venag/telegrambotsale/.env
+
+[Install]
+WantedBy=multi-user.target
