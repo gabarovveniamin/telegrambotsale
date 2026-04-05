@@ -643,6 +643,97 @@ class DiscountParser:
             return []
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  MELOMAN.KZ  — Книги, комиксы, настолки
+    # ─────────────────────────────────────────────────────────────────────────
+    async def fetch_meloman(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+
+        categories = ["books", "comics", "board-games"]
+        headers = {
+            **self.base_headers,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://www.meloman.kz/",
+        }
+
+        for category in categories:
+            for page in range(1, 4):
+                url = f"https://www.meloman.kz/{category}/?p={page}"
+                r = await safe_request(session, "GET", url, headers=headers)
+                if r is None: break
+
+                soup = BeautifulSoup(r.text, "html.parser")
+                # Ищем карточки товаров
+                cards = soup.select(".product-item")
+                if not cards: break
+
+                page_ids = []
+                info_map = {}
+
+                for card in cards:
+                    pid_tag = card.select_one("[data-product-id]")
+                    if not pid_tag: continue
+                    pid = pid_tag["data-product-id"]
+                    
+                    link_tag = card.select_one("a.product-item-link")
+                    if not link_tag: continue
+                    
+                    title = link_tag.get_text().strip()
+                    link = link_tag["href"]
+                    
+                    page_ids.append(pid)
+                    info_map[pid] = {"title": title, "link": link}
+
+                if not page_ids: break
+
+                # Запрашиваем цены через спец. эндпоинт
+                # Меломан принимает параметры вида ids[]
+                api_url = "https://www.meloman.kz/loyalty/products/prices/"
+                # Строим параметры вручную для корректного формата ids[]
+                ids_params = "&".join([f"ids[]={i}" for i in page_ids])
+                
+                prices_r = await safe_request(session, "GET", f"{api_url}?{ids_params}", headers=headers)
+                if prices_r:
+                    try:
+                        prices_data = prices_r.json().get("prices", {})
+                        for pid, html in prices_data.items():
+                            if pid not in info_map: continue
+                            
+                            # Парсим цены из HTML-куска
+                            # Ищем new_price (data-price-amount)
+                            new_m = re.search(r'data-price-amount="(\d+)"', html)
+                            # Ищем old_price в том же куске (если есть скидка)
+                            old_m = re.search(r'data-price-type="oldPrice".*?data-price-amount="(\d+)"', html, re.S) or \
+                                    re.search(r'class="old-price".*?data-price-amount="(\d+)"', html, re.S)
+                            
+                            if not new_m: continue
+                            new_p = int(new_m.group(1))
+                            old_p = int(old_m.group(1)) if old_m else 0
+                            
+                            if old_p > new_p:
+                                uid = f"ml_{pid}"
+                                if uid in seen_ids: continue
+                                seen_ids.add(uid)
+
+                                result.append({
+                                    "id":        uid,
+                                    "title":     info_map[pid]["title"],
+                                    "old_price": fmt_price(old_p),
+                                    "new_price": fmt_price(new_p),
+                                    "discount":  calc_discount(old_p, new_p),
+                                    "link":      info_map[pid]["link"],
+                                    "shop":      "Meloman 📚",
+                                })
+                    except Exception as e:
+                        logger.error(f"Meloman API error: {e}")
+
+                if len(cards) < 15: break
+                await asyncio.sleep(0.3)
+
+        logger.info(f"Meloman: найдено {len(result)} акций")
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  АГРЕГАТОР
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_discounts(self) -> List[Dict[str, Any]]:
@@ -654,6 +745,7 @@ class DiscountParser:
                 self.fetch_kaspi(session),
                 self.fetch_alser(session),
                 self.fetch_shopkz(session),
+                self.fetch_meloman(session),
                 return_exceptions=True,
             )
 
@@ -723,6 +815,24 @@ class DiscountParser:
                         m = re.search(r'"?price"?\s*:\s*(\d+)', pr.text)
                         if m:
                             return int(m.group(1))
+
+                elif shop == "Meloman":
+                    pid_m = re.search(r"/([^/]+)\.html", url)
+                    if pid_m:
+                        pid = pid_m.group(1).split("-")[-1] # Часто ID в конце слага
+                        if not pid.isdigit():
+                            # Пытаемся вытащить из самой страницы
+                            pid_tag = soup.select_one("[data-product-id]")
+                            if pid_tag: pid = pid_tag["data-product-id"]
+                        
+                        if pid:
+                            api_url = f"https://www.meloman.kz/loyalty/products/prices/?ids[]={pid}"
+                            pr = await session.get(api_url, headers={**self.base_headers, "X-Requested-With": "XMLHttpRequest"})
+                            if pr.status_code == 200:
+                                p_data = pr.json().get("prices", {})
+                                html = p_data.get(pid, "")
+                                m = re.search(r'data-price-amount="(\d+)"', html)
+                                if m: return int(m.group(1))
 
                 if price_text:
                     clean = re.sub(r"[^\d]", "", price_text)
