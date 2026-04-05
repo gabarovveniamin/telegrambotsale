@@ -176,7 +176,11 @@ class DiscountParser:
         """Парсинг конкретной категории Sulpak."""
         result = []
         for page in range(1, 4):
-            url = f"https://www.sulpak.kz/f/{category}/almaty/?page={page}"
+            # Для первой страницы не всегда нужен параметр page=1
+            if page == 1:
+                url = f"https://www.sulpak.kz/f/{category}/"
+            else:
+                url = f"https://www.sulpak.kz/f/{category}/?page={page}"
             headers = {
                 **self.base_headers,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -649,7 +653,12 @@ class DiscountParser:
         result: List[Dict[str, Any]] = []
         seen_ids: set = set()
 
-        categories = ["books", "comics", "board-games"]
+        # Правильные пути к разделам Меломана
+        categories = [
+            "books", "books/fiction", "books/graphic-literature", 
+            "toys-and-entertainment", "toys-and-entertainment/board-games",
+            "toys-and-entertainment/lego", "videogames", "office-items"
+        ]
         headers = {
             **self.base_headers,
             "X-Requested-With": "XMLHttpRequest",
@@ -658,7 +667,12 @@ class DiscountParser:
 
         for category in categories:
             for page in range(1, 4):
-                url = f"https://www.meloman.kz/{category}/?p={page}"
+                # Для первой страницы не всегда нужен параметр p=1, иногда Meloman дает 404
+                if page == 1:
+                    url = f"https://www.meloman.kz/{category}/"
+                else:
+                    url = f"https://www.meloman.kz/{category}/?p={page}"
+                
                 r = await safe_request(session, "GET", url, headers=headers)
                 if r is None: break
 
