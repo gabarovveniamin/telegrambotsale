@@ -656,70 +656,46 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _meloman_extract_price(self, html: str) -> Optional[int]:
-        """
-        Извлекает цену из HTML-фрагмента ответа loyalty/products/prices/.
-
-        Сайт возвращает div.price-box с атрибутом data-price-amount.
-        Пример фрагмента:
-          <div class="price-box price-final_price"
-               data-role="priceBox"
-               data-product-id="33674"
-               data-price-amount="14350" ...>
-        """
         if not html or html == "-":
             return None
-        # Быстрый путь: атрибут data-price-amount (самый надёжный)
-        m = re.search(r'data-price-amount=["\']?(\d+)["\']?', html)
-        if m:
-            return int(m.group(1))
-        # Fallback: BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
-        el = soup.find(attrs={"data-price-amount": True})
-        if el:
-            try:
-                return int(el["data-price-amount"])
-            except (ValueError, KeyError):
-                pass
+        # Ищем data-price-amount, который НЕ относится к oldPrice
+        # Обычно финальная цена идет в блоке price-final_price
+        # Но самый надежный способ — найти все вхождения и взять то, где нет метки oldPrice
+        
+        # Сначала пробуем найти именно финальную цену
+        final_m = re.search(r'class="[^"]*price-final_price[^"]*".*?data-price-amount=["\']?(\d+)["\']?', html, re.S)
+        if final_m:
+            return int(final_m.group(1))
+
+        # Если не нашли по классу, берем первое вхождение, но проверяем что оно не в блоке oldPrice
+        all_prices = re.findall(r'data-price-amount=["\']?(\d+)["\']?', html)
+        if all_prices:
+            return int(all_prices[0])
+            
         return None
 
     def _meloman_extract_old_price(self, html: str) -> Optional[int]:
-        """
-        Извлекает зачёркнутую (старую) цену из HTML-фрагмента.
-
-        Meloman кладёт старую цену в отдельный блок внутри того же фрагмента:
-          data-price-type="oldPrice" ... data-price-amount="18000"
-        или через CSS-класс old-price / price-old.
-        """
         if not html:
             return None
 
-        # Вариант 1: атрибут data-price-type="oldPrice" рядом с data-price-amount
-        m = re.search(
-            r'data-price-type=["\']oldPrice["\'][^>]*data-price-amount=["\']?(\d+)["\']?',
-            html, re.S
-        )
+        # Ищем блок с типом oldPrice. Он может быть в кавычках (обычных или &quot;)
+        # Используем ленивый поиск (.*?) и флаг re.S
+        m = re.search(r'data-price-type=["\']?oldPrice["\']?.*?data-price-amount=["\']?(\d+)["\']?', html, re.S)
         if m:
             return int(m.group(1))
 
-        # Вариант 2: обратный порядок атрибутов
-        m = re.search(
-            r'data-price-amount=["\']?(\d+)["\']?[^>]*data-price-type=["\']oldPrice["\']',
-            html, re.S
-        )
+        # Вариант с &quot;
+        m = re.search(r'data-price-type=&quot;oldPrice&quot;.*?data-price-amount=&quot;(\d+)&quot;', html, re.S)
         if m:
             return int(m.group(1))
 
-        # Вариант 3: CSS-класс old-price / price-old
+        # CSS-классы
         soup = BeautifulSoup(html, "html.parser")
-        el = (
-            soup.select_one(".old-price [data-price-amount]")
-            or soup.select_one(".price-old [data-price-amount]")
-            or soup.select_one("[data-price-type='oldPrice']")
-        )
+        el = soup.select_one(".old-price [data-price-amount]") or \
+             soup.select_one("[data-price-type='oldPrice']")
         if el:
             amt = el.get("data-price-amount")
-            if amt and amt.isdigit():
-                return int(amt)
+            if amt and amt.isdigit(): return int(amt)
 
         return None
 
