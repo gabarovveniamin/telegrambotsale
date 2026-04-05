@@ -658,19 +658,17 @@ class DiscountParser:
     def _meloman_extract_price(self, html: str) -> Optional[int]:
         if not html or html == "-":
             return None
-        # Ищем data-price-amount, который НЕ относится к oldPrice
-        # Обычно финальная цена идет в блоке price-final_price
-        # Но самый надежный способ — найти все вхождения и взять то, где нет метки oldPrice
         
-        # Сначала пробуем найти именно финальную цену
-        final_m = re.search(r'class="[^"]*price-final_price[^"]*".*?data-price-amount=["\']?(\d+)["\']?', html, re.S)
+        # Регулярка, которая вообще не смотрит на кавычки (могут быть \" или &quot;)
+        # Ищем блок финальной цены
+        final_m = re.search(r'price-final_price.*?data-price-amount\D+(\d+)', html, re.S)
         if final_m:
             return int(final_m.group(1))
 
-        # Если не нашли по классу, берем первое вхождение, но проверяем что оно не в блоке oldPrice
-        all_prices = re.findall(r'data-price-amount=["\']?(\d+)["\']?', html)
-        if all_prices:
-            return int(all_prices[0])
+        # Фаллбек: просто первое вхождение цифр после data-price-amount
+        all_bits = re.findall(r'data-price-amount\D+(\d+)', html)
+        if all_bits:
+            return int(all_bits[0])
             
         return None
 
@@ -678,21 +676,15 @@ class DiscountParser:
         if not html:
             return None
 
-        # Ищем блок с типом oldPrice. Он может быть в кавычках (обычных или &quot;)
-        # Используем ленивый поиск (.*?) и флаг re.S
-        m = re.search(r'data-price-type=["\']?oldPrice["\']?.*?data-price-amount=["\']?(\d+)["\']?', html, re.S)
+        # Ищем блок oldPrice, игнорируя тип кавычек
+        m = re.search(r'oldPrice.*?data-price-amount\D+(\d+)', html, re.S)
         if m:
             return int(m.group(1))
 
-        # Вариант с &quot;
-        m = re.search(r'data-price-type=&quot;oldPrice&quot;.*?data-price-amount=&quot;(\d+)&quot;', html, re.S)
-        if m:
-            return int(m.group(1))
-
-        # CSS-классы
+        # CSS-классы (Bs4)
         soup = BeautifulSoup(html, "html.parser")
         el = soup.select_one(".old-price [data-price-amount]") or \
-             soup.select_one("[data-price-type='oldPrice']")
+             soup.select_one("[data-price-type*='oldPrice']")
         if el:
             amt = el.get("data-price-amount")
             if amt and amt.isdigit(): return int(amt)
