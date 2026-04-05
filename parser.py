@@ -4,6 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 import urllib.parse
 from typing import List, Dict, Any, Optional
+import time
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
@@ -653,99 +654,206 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     #  MELOMAN.KZ  — Книги, комиксы, настолки
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _meloman_extract_price(self, html: str) -> Optional[int]:
+        """
+        Извлекает цену из HTML-фрагмента ответа loyalty/products/prices/.
+
+        Сайт возвращает div.price-box с атрибутом data-price-amount.
+        Пример фрагмента:
+          <div class="price-box price-final_price"
+               data-role="priceBox"
+               data-product-id="33674"
+               data-price-amount="14350" ...>
+        """
+        if not html or html == "-":
+            return None
+        # Быстрый путь: атрибут data-price-amount (самый надёжный)
+        m = re.search(r'data-price-amount=["\']?(\d+)["\']?', html)
+        if m:
+            return int(m.group(1))
+        # Fallback: BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.find(attrs={"data-price-amount": True})
+        if el:
+            try:
+                return int(el["data-price-amount"])
+            except (ValueError, KeyError):
+                pass
+        return None
+
+    def _meloman_extract_old_price(self, html: str) -> Optional[int]:
+        """
+        Извлекает зачёркнутую (старую) цену из HTML-фрагмента.
+
+        Meloman кладёт старую цену в отдельный блок внутри того же фрагмента:
+          data-price-type="oldPrice" ... data-price-amount="18000"
+        или через CSS-класс old-price / price-old.
+        """
+        if not html:
+            return None
+
+        # Вариант 1: атрибут data-price-type="oldPrice" рядом с data-price-amount
+        m = re.search(
+            r'data-price-type=["\']oldPrice["\'][^>]*data-price-amount=["\']?(\d+)["\']?',
+            html, re.S
+        )
+        if m:
+            return int(m.group(1))
+
+        # Вариант 2: обратный порядок атрибутов
+        m = re.search(
+            r'data-price-amount=["\']?(\d+)["\']?[^>]*data-price-type=["\']oldPrice["\']',
+            html, re.S
+        )
+        if m:
+            return int(m.group(1))
+
+        # Вариант 3: CSS-класс old-price / price-old
+        soup = BeautifulSoup(html, "html.parser")
+        el = (
+            soup.select_one(".old-price [data-price-amount]")
+            or soup.select_one(".price-old [data-price-amount]")
+            or soup.select_one("[data-price-type='oldPrice']")
+        )
+        if el:
+            amt = el.get("data-price-amount")
+            if amt and amt.isdigit():
+                return int(amt)
+
+        return None
+
+    async def _meloman_fetch_prices(
+        self,
+        session: AsyncSession,
+        product_ids: List[str],
+        headers: Dict,
+    ) -> Dict[str, str]:
+        """
+        Запрашивает loyalty/products/prices/ батчами по 100 ID.
+
+        Сайт ожидает параметры вида ids%5B%5D=111&ids%5B%5D=222
+        (%5B%5D — это URL-encoded []).
+        Параметр _ — Unix-timestamp в миллисекундах (cache-buster).
+        """
+        CHUNK = 100
+        prices: Dict[str, str] = {}
+        api_url = "https://www.meloman.kz/loyalty/products/prices/"
+
+        chunks = [product_ids[i:i + CHUNK] for i in range(0, len(product_ids), CHUNK)]
+        for chunk in chunks:
+            ids_qs = "&".join(f"ids%5B%5D={pid}" for pid in chunk)
+            ts = int(time.time() * 1000)
+            url = f"{api_url}?{ids_qs}&_={ts}"
+
+            r = await safe_request(session, "GET", url, headers=headers, timeout=20)
+            if r is None:
+                continue
+            try:
+                prices.update(r.json().get("prices", {}))
+            except Exception as e:
+                logger.error(f"Meloman prices JSON error: {e}")
+
+            await asyncio.sleep(0.3)
+
+        return prices
+
     async def fetch_meloman(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         seen_ids: set = set()
 
-        # Правильные пути к разделам Меломана
         categories = [
             "books", "videogames", "toys-and-entertainment",
-            "books/fiction", "books/graphic-literature", 
-            "shkola-kancelyariya-19236"
+            "books/fiction", "books/graphic-literature",
+            "shkola-kancelyariya-19236",
         ]
         headers = {
             **self.base_headers,
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": "https://www.meloman.kz/",
         }
 
         for category in categories:
             for page in range(1, 4):
-                # Для первой страницы не всегда нужен параметр p=1, иногда Meloman дает 404
-                if page == 1:
-                    url = f"https://www.meloman.kz/{category}/"
-                else:
-                    url = f"https://www.meloman.kz/{category}/?p={page}"
-                
+                url = (
+                    f"https://www.meloman.kz/{category}/"
+                    if page == 1
+                    else f"https://www.meloman.kz/{category}/?p={page}"
+                )
+
                 r = await safe_request(session, "GET", url, headers=headers)
-                if r is None: break
+                if r is None:
+                    break
 
                 soup = BeautifulSoup(r.text, "html.parser")
-                # Ищем карточки товаров
-                cards = soup.select(".product-item")
-                if not cards: break
 
-                page_ids = []
-                info_map = {}
+                # ── Собираем ID и мета-информацию со страницы ──────────────
+                page_ids: List[str] = []
+                info_map: Dict[str, Dict] = {}
 
-                for card in cards:
-                    pid_tag = card.select_one("[data-product-id]")
-                    if not pid_tag: continue
-                    pid = pid_tag["data-product-id"]
-                    
-                    link_tag = card.select_one("a.product-item-link")
-                    if not link_tag: continue
-                    
-                    title = link_tag.get_text().strip()
-                    link = link_tag["href"]
-                    
-                    page_ids.append(pid)
-                    info_map[pid] = {"title": title, "link": link}
+                for card in soup.select(".product-item"):
+                    # product-id живёт на разных элементах — проверяем оба
+                    pid_el = card.select_one(
+                        "[data-product-id]"
+                    ) or card.select_one("form[data-product-id]")
+                    if not pid_el:
+                        continue
+                    pid = str(pid_el.get("data-product-id", "")).strip()
+                    if not pid:
+                        continue
 
-                if not page_ids: break
+                    link_el = card.select_one("a.product-item-link")
+                    if not link_el:
+                        continue
 
-                # Запрашиваем цены через спец. эндпоинт
-                # Меломан принимает параметры вида ids[]
-                api_url = "https://www.meloman.kz/loyalty/products/prices/"
-                # Строим параметры вручную для корректного формата ids[]
-                ids_params = "&".join([f"ids[]={i}" for i in page_ids])
-                
-                prices_r = await safe_request(session, "GET", f"{api_url}?{ids_params}", headers=headers)
-                if prices_r:
-                    try:
-                        prices_data = prices_r.json().get("prices", {})
-                        for pid, html in prices_data.items():
-                            if pid not in info_map: continue
-                            
-                            # Парсим цены из HTML-куска
-                            # Ищем new_price (data-price-amount)
-                            new_m = re.search(r'data-price-amount="(\d+)"', html)
-                            # Ищем old_price в том же куске (если есть скидка)
-                            old_m = re.search(r'data-price-type="oldPrice".*?data-price-amount="(\d+)"', html, re.S) or \
-                                    re.search(r'class="old-price".*?data-price-amount="(\d+)"', html, re.S)
-                            
-                            if not new_m: continue
-                            new_p = int(new_m.group(1))
-                            old_p = int(old_m.group(1)) if old_m else 0
-                            
-                            if old_p > new_p:
-                                uid = f"ml_{pid}"
-                                if uid in seen_ids: continue
-                                seen_ids.add(uid)
+                    title = link_el.get_text(strip=True)
+                    link  = link_el.get("href", "")
 
-                                result.append({
-                                    "id":        uid,
-                                    "title":     info_map[pid]["title"],
-                                    "old_price": fmt_price(old_p),
-                                    "new_price": fmt_price(new_p),
-                                    "discount":  calc_discount(old_p, new_p),
-                                    "link":      info_map[pid]["link"],
-                                    "shop":      "Meloman 📚",
-                                })
-                    except Exception as e:
-                        logger.error(f"Meloman API error: {e}")
+                    if pid not in info_map:
+                        page_ids.append(pid)
+                        info_map[pid] = {"title": title, "link": link}
 
-                if len(cards) < 15: break
+                if not page_ids:
+                    break
+
+                # ── Запрашиваем цены через loyalty API ─────────────────────
+                prices_data = await self._meloman_fetch_prices(session, page_ids, headers)
+
+                for pid, html_fragment in prices_data.items():
+                    if pid not in info_map:
+                        continue
+
+                    new_p = self._meloman_extract_price(html_fragment)
+                    old_p = self._meloman_extract_old_price(html_fragment)
+
+                    # Товар без скидки — пропускаем
+                    if not new_p or not old_p or old_p <= new_p:
+                        continue
+
+                    uid = f"ml_{pid}"
+                    if uid in seen_ids:
+                        continue
+                    seen_ids.add(uid)
+
+                    result.append({
+                        "id":        uid,
+                        "title":     info_map[pid]["title"],
+                        "old_price": fmt_price(old_p),
+                        "new_price": fmt_price(new_p),
+                        "discount":  calc_discount(old_p, new_p),
+                        "link":      info_map[pid]["link"],
+                        "shop":      "Meloman 📚",
+                    })
+
+                logger.info(
+                    f"Meloman [{category}] page {page}: "
+                    f"{len(page_ids)} товаров, "
+                    f"{sum(1 for p in prices_data if p in info_map and self._meloman_extract_old_price(prices_data[p]))} со скидкой"
+                )
+
+                if len(page_ids) < 15:
+                    break
                 await asyncio.sleep(0.3)
 
         logger.info(f"Meloman: найдено {len(result)} акций")
@@ -835,22 +943,40 @@ class DiscountParser:
                             return int(m.group(1))
 
                 elif shop == "Meloman":
-                    pid_m = re.search(r"/([^/]+)\.html", url)
-                    if pid_m:
-                        pid = pid_m.group(1).split("-")[-1] # Часто ID в конце слага
-                        if not pid.isdigit():
-                            # Пытаемся вытащить из самой страницы
-                            pid_tag = soup.select_one("[data-product-id]")
-                            if pid_tag: pid = pid_tag["data-product-id"]
-                        
-                        if pid:
-                            api_url = f"https://www.meloman.kz/loyalty/products/prices/?ids[]={pid}"
-                            pr = await session.get(api_url, headers={**self.base_headers, "X-Requested-With": "XMLHttpRequest"})
-                            if pr.status_code == 200:
-                                p_data = pr.json().get("prices", {})
-                                html = p_data.get(pid, "")
-                                m = re.search(r'data-price-amount="(\d+)"', html)
-                                if m: return int(m.group(1))
+                    # ── Используем тот же loyalty API что и в fetch_meloman ──
+                    pid = None
+
+                    # Пробуем вытащить ID из HTML страницы товара
+                    pid_el = soup.select_one("[data-product-id]")
+                    if pid_el:
+                        pid = str(pid_el.get("data-product-id", "")).strip()
+
+                    # Fallback: ID часто стоит последним числом в URL
+                    # /catalog/product/view/id/12345/  или  /slug-12345.html
+                    if not pid or not pid.isdigit():
+                        m = re.search(r"/id/(\d+)", url) or re.search(r"-(\d+)\.html$", url)
+                        if m:
+                            pid = m.group(1)
+
+                    if pid and pid.isdigit():
+                        ts = int(time.time() * 1000)
+                        api_url = (
+                            f"https://www.meloman.kz/loyalty/products/prices/"
+                            f"?ids%5B%5D={pid}&_={ts}"
+                        )
+                        pr = await session.get(
+                            api_url,
+                            headers={
+                                **self.base_headers,
+                                "Accept": "application/json, text/javascript, */*; q=0.01",
+                                "X-Requested-With": "XMLHttpRequest",
+                                "Referer": url,
+                            },
+                            timeout=15,
+                        )
+                        if pr.status_code == 200:
+                            html_fragment = pr.json().get("prices", {}).get(pid, "")
+                            return self._meloman_extract_price(html_fragment)
 
                 if price_text:
                     clean = re.sub(r"[^\d]", "", price_text)
