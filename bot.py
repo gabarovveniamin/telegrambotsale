@@ -41,13 +41,19 @@ class TrackState(StatesGroup):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def build_main_menu(user_id: int = None) -> InlineKeyboardMarkup:
+    buttons = [
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
          InlineKeyboardButton(text="👑 Premium", callback_data="menu_premium")],
         [InlineKeyboardButton(text="🔗 Реферальная программа", callback_data="menu_referral")],
         [InlineKeyboardButton(text="📊 Моя статистика", callback_data="menu_stats")],
-    ])
+    ]
+    
+    # Добавляем кнопку админа, если пользователь в списке
+    if user_id in config.ADMIN_IDS:
+        buttons.append([InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin_menu")])
+        
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def build_premium_kb() -> InlineKeyboardMarkup:
@@ -130,7 +136,7 @@ async def cmd_start(message: types.Message):
         f"📌 Статус: {premium_badge}"
         f"{referral_bonus_text}\n\n"
         f"Выбери раздел 👇",
-        reply_markup=build_main_menu(),
+        reply_markup=build_main_menu(user_id),
         parse_mode="HTML"
     )
 
@@ -146,7 +152,7 @@ async def cb_back_main(callback: types.CallbackQuery):
     premium_badge = "👑 <b>Premium</b>" if is_prem else "🆓 Бесплатный аккаунт"
     await callback.message.edit_text(
         f"🏠 <b>Главное меню</b>\n\nСтатус: {premium_badge}\n\nВыбери раздел 👇",
-        reply_markup=build_main_menu(),
+        reply_markup=build_main_menu(user_id),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -419,7 +425,7 @@ async def successful_payment_handler(message: types.Message):
         f"📅 Premium активирован на <b>{PREMIUM_DAYS} дней</b>\n\n"
         f"Теперь тебе доступны все функции бота!"
         f"{referrer_bonus_text}",
-        reply_markup=build_main_menu(),
+        reply_markup=build_main_menu(user_id),
         parse_mode="HTML"
     )
 
@@ -753,4 +759,6 @@ async def broadcast_message(text: str, premium_only: bool = False, min_discount:
     return count
 
 
+from admin_panel import admin_router
+dp.include_router(admin_router)
 dp.include_router(router)
