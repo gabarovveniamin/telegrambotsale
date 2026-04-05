@@ -267,7 +267,11 @@ class DiscountParser:
             except: break
 
         # Затем добавляем обход по популярным категориям
-        categories = ["smartfony", "noutbuki", "televizory", "holodilniki", "stiralniye_mashini", "pyilesosyi"]
+        # Правильные сегменты Sulpak (версия Алматы)
+        categories = [
+            "smartfoniy", "noutbukiy", "led_oled_televizoriy", 
+            "holodilnikiy", "stiralniye_mashiniy", "pyilesosyi"
+        ]
         for cat in categories:
             res = await self.fetch_category_sulpak(session, cat, seen_ids)
             result.extend(res)
@@ -382,11 +386,11 @@ class DiscountParser:
 
         for page in range(0, MAX_PAGES):
             params = {
-                "q":        f":availableInZones:{CITY_ID_KASPI}:all:discountDesc:all",
+                "q":        f":availableInZones:{CITY_ID_KASPI}:all:relevance:all",
                 "page":     page,
                 "pageSize": PAGE_SIZE,
                 "c":        CITY_ID_KASPI,
-                "sc":       "-1",
+                "sc":       "",
             }
             r = await safe_request(
                 session, "GET",
@@ -655,9 +659,9 @@ class DiscountParser:
 
         # Правильные пути к разделам Меломана
         categories = [
-            "books", "books/fiction", "books/graphic-literature", 
-            "toys-and-entertainment", "toys-and-entertainment/board-games",
-            "toys-and-entertainment/lego", "videogames", "office-items"
+            "books", "videogames", "toys-and-entertainment",
+            "books/fiction", "books/graphic-literature", 
+            "shkola-kancelyariya-19236"
         ]
         headers = {
             **self.base_headers,
