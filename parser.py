@@ -741,6 +741,9 @@ class DiscountParser:
             "books", "videogames", "toys-and-entertainment",
             "books/fiction", "books/graphic-literature",
             "shkola-kancelyariya-19236",
+            "baby-and-mom", "food-items", "suvenirnaya-produkciya-19235",
+            "tvorchestvo-19692", "music", "127-audiotehnika-28213",
+            "digital-technique"
         ]
         headers = {
             **self.base_headers,
