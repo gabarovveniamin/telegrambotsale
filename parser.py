@@ -659,35 +659,42 @@ class DiscountParser:
         if not html or html == "-":
             return None
         
-        # Регулярка, которая вообще не смотрит на кавычки (могут быть \" или &quot;)
-        # Ищем блок финальной цены
-        final_m = re.search(r'price-final_price.*?data-price-amount\D+(\d+)', html, re.S)
-        if final_m:
-            return int(final_m.group(1))
+        soup = BeautifulSoup(html, "html.parser")
+        # Ищем специальную цену, если она есть
+        special = soup.select_one(".special-price [data-price-amount]")
+        if special:
+            amt = special.get("data-price-amount")
+            if amt and amt.replace(".", "").isdigit():
+                return int(float(amt))
 
-        # Фаллбек: просто первое вхождение цифр после data-price-amount
-        all_bits = re.findall(r'data-price-amount\D+(\d+)', html)
-        if all_bits:
-            return int(all_bits[0])
+        # Если специальной нет, ищем финальную цену (которая может быть единственной)
+        # Но важно не зацепить oldPrice, если мы ищем текущую цену.
+        # В Meloman финальная цена обычно в .price-container.price-final_price
+        # но если есть скидка, их там ДВЕ.
+        final = soup.select_one(".special-price [data-price-amount]") or \
+                soup.select_one("[data-price-type='finalPrice']") or \
+                soup.select_one(".price-final_price [data-price-amount]")
+        
+        if final:
+            amt = final.get("data-price-amount")
+            if amt and amt.replace(".", "").isdigit():
+                return int(float(amt))
             
         return None
 
     def _meloman_extract_old_price(self, html: str) -> Optional[int]:
-        if not html:
+        if not html or html == "-":
             return None
 
-        # Ищем блок oldPrice, игнорируя тип кавычек
-        m = re.search(r'oldPrice.*?data-price-amount\D+(\d+)', html, re.S)
-        if m:
-            return int(m.group(1))
-
-        # CSS-классы (Bs4)
         soup = BeautifulSoup(html, "html.parser")
+        # Обычная цена (старая)
         el = soup.select_one(".old-price [data-price-amount]") or \
-             soup.select_one("[data-price-type*='oldPrice']")
+             soup.select_one("[data-price-type='oldPrice']")
+        
         if el:
             amt = el.get("data-price-amount")
-            if amt and amt.isdigit(): return int(amt)
+            if amt and amt.replace(".", "").isdigit():
+                return int(float(amt))
 
         return None
 
@@ -797,6 +804,8 @@ class DiscountParser:
 
                     # Товар без скидки — пропускаем
                     if not new_p or not old_p or old_p <= new_p:
+                        if old_p:
+                            logger.info(f"Meloman DEBUG: pid={pid}, np={new_p}, op={old_p}, frag_len={len(html_fragment)}")
                         continue
 
                     uid = f"ml_{pid}"

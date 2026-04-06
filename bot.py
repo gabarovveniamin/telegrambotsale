@@ -666,6 +666,9 @@ async def cmd_salemechta(message: types.Message):
 
 async def send_sale_chunks(message, items, header):
     """Вспомогательная функция для отправки товаров кусками."""
+    # Сортируем по проценту скидки перед выводом
+    items.sort(key=lambda x: x.get("discount", 0), reverse=True)
+    
     lines = [header]
     for item in items[:40]: # Ограничим до 40 самых жирных скидок для скорости
         price_line = f"<s>{item['old_price']}</s> → <b>{item['new_price']}</b>"
