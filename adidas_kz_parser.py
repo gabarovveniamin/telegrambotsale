@@ -17,11 +17,11 @@ from datetime import datetime
 BASE_URL = "https://adidas.kz"
 
 CATEGORIES = {
-    "muzhchina/obuv":          "Мужская обувь",
-    "zhenshchina/obuv":        "Женская обувь",
+    "muzhchiny/obuv":          "Мужская обувь",
+    "zhenshhiny/obuv":         "Женская обувь",
     "deti/obuv":               "Детская обувь",
-    "muzhchina/odezhda":       "Мужская одежда",
-    "zhenshchina/odezhda":     "Женская одежда",
+    "muzhchiny/odezhda":       "Мужская одежда",
+    "zhenshhiny/odezhda":      "Женская одежда",
     "deti/odezhda":            "Детская одежда",
     "aksessuary":              "Аксессуары",
 }

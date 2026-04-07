@@ -60,6 +60,9 @@ class Database:
             await conn.execute("""
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_threshold INTEGER DEFAULT 0
             """)
+            await conn.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{tech,other}'
+            """)
 
             # ── Subscriptions ──────────────────────────────────────────────────
             await conn.execute("""
@@ -150,6 +153,40 @@ class Database:
             "UPDATE users SET discount_threshold = $1 WHERE user_id = $2",
             max(0, min(100, threshold)), user_id
         )
+
+    async def get_user_categories(self, user_id: int) -> List[str]:
+        """Get user's enabled categories. Default is ['tech', 'other']."""
+        row = await self.pool.fetchrow("SELECT categories FROM users WHERE user_id = $1", user_id)
+        if row and row["categories"]:
+            return row["categories"]
+        return ["tech", "other"]
+
+    async def set_user_categories(self, user_id: int, categories: List[str]):
+        """Set user's enabled categories."""
+        await self.pool.execute(
+            "UPDATE users SET categories = $1 WHERE user_id = $2",
+            categories, user_id
+        )
+
+    async def get_users_by_category_and_threshold(self, category: str, min_discount: int, premium_only: bool = True) -> List[int]:
+        """Get all users who have the category enabled and meet the discount threshold."""
+        if premium_only:
+            query = """
+                SELECT u.user_id FROM users u
+                INNER JOIN subscriptions s ON u.user_id = s.user_id
+                WHERE u.discount_threshold <= $1
+                  AND $2 = ANY(u.categories)
+                  AND s.is_active = TRUE
+                  AND (s.expires_at IS NULL OR s.expires_at > NOW())
+            """
+        else:
+            query = """
+                SELECT user_id FROM users 
+                WHERE discount_threshold <= $1 AND $2 = ANY(categories)
+            """
+        
+        rows = await self.pool.fetch(query, min_discount, category)
+        return [row["user_id"] for row in rows]
 
     async def get_users_with_threshold(self, min_discount: int, premium_only: bool = True) -> List[int]:
         """Get all users (optionally premium only) whose threshold is met by min_discount."""

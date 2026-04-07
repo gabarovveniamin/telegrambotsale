@@ -178,7 +178,7 @@ async def cb_settings(callback: types.CallbackQuery):
         "Я буду присылать уведомления только если скидка больше или равна этому значению.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📉 Настроить порог скидки", callback_data="settings_threshold")],
-            [InlineKeyboardButton(text="🛒 Выбрать магазины", callback_data="settings_shops")],
+            [InlineKeyboardButton(text="📂 Выбрать категории товаров", callback_data="settings_categories")],
             [InlineKeyboardButton(text="🎯 Моя следилка (Kaspi)", callback_data="settings_track")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
         ]),
@@ -231,8 +231,9 @@ async def cb_set_threshold(callback: types.CallbackQuery):
 
 async def _show_settings(target, user_id: int):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Выбрать магазины", callback_data="settings_shops")],
-        [InlineKeyboardButton(text="🎯 Добавить товар следилки (Kaspi)", callback_data="settings_track")],
+        [InlineKeyboardButton(text="📉 Порог скидки", callback_data="settings_threshold")],
+        [InlineKeyboardButton(text="📂 Категории товаров", callback_data="settings_categories")],
+        [InlineKeyboardButton(text="🎯 Добавить товар следилки", callback_data="settings_track")],
         [InlineKeyboardButton(text="💎 Premium подписка", callback_data="menu_premium")],
     ])
     await target.answer(
@@ -240,6 +241,46 @@ async def _show_settings(target, user_id: int):
         reply_markup=keyboard,
         parse_mode="HTML"
     )
+
+@router.callback_query(F.data == "settings_categories")
+async def cb_settings_categories(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    enabled_cats = await db.get_user_categories(user_id)
+    
+    categories = {
+        "tech":    "💻 Электроника и Техника",
+        "fashion": "👟 Одежда и Обувь (Adidas)",
+        "other":   "📚 Другое (книги, игры)"
+    }
+    
+    buttons = []
+    for code, label in categories.items():
+        status = "✅" if code in enabled_cats else "❌"
+        buttons.append([InlineKeyboardButton(text=f"{status} {label}", callback_data=f"toggle_cat_{code}")])
+    
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в настройки", callback_data="menu_settings")])
+    
+    await callback.message.edit_text(
+        "📂 <b>Выбор категорий уведомлений</b>\n\n"
+        "Выберите категории товаров, по которым вы хотите получать уведомления о скидках:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("toggle_cat_"))
+async def cb_toggle_category(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cat_to_toggle = callback.data.replace("toggle_cat_", "")
+    
+    enabled_cats = await db.get_user_categories(user_id)
+    if cat_to_toggle in enabled_cats:
+        enabled_cats.remove(cat_to_toggle)
+    else:
+        enabled_cats.append(cat_to_toggle)
+    
+    await db.set_user_categories(user_id, enabled_cats)
+    await cb_settings_categories(callback)
 
 
 @router.callback_query(F.data == "settings_track")
@@ -790,14 +831,18 @@ async def cmd_salemeloman(message: types.Message):
 # Broadcast helper (used by scheduler)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def broadcast_message(text: str, premium_only: bool = False, min_discount: int = 0):
+async def broadcast_message(text: str, premium_only: bool = False, min_discount: int = 0, category: str = None):
     """
     Safe mass broadcast respecting Telegram API rate limits.
     premium_only=True — used for premium-exclusive notifications.
     min_discount — only send to users whose threshold is <= this value.
+    category — filter users by selected categories (tech, fashion, other).
     """
-    if min_discount > 0:
-        # Фильтруем пользователей по их настройкам порога скидки
+    if category and min_discount > 0:
+        # Фильтруем по категории И порогу скидки
+        users = await db.get_users_by_category_and_threshold(category, min_discount, premium_only=premium_only)
+    elif min_discount > 0:
+        # Фильтруем только по порогу (старая логика)
         users = await db.get_users_with_threshold(min_discount, premium_only=premium_only)
     elif premium_only:
         users = await db.get_premium_users()

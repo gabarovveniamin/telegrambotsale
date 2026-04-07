@@ -161,6 +161,7 @@ class DiscountParser:
                         "discount":  calc_discount(old_p, new_p),
                         "link":      f"https://www.technodom.kz/p/{slug}",
                         "shop":      "Technodom",
+                        "category":  "tech",
                     })
 
                 if len(products) < PAGE_SIZE:
@@ -177,7 +178,6 @@ class DiscountParser:
         """Парсинг конкретной категории Sulpak."""
         result = []
         for page in range(1, 4):
-            # Для первой страницы не всегда нужен параметр page=1
             if page == 1:
                 url = f"https://www.sulpak.kz/f/{category}/"
             else:
@@ -220,6 +220,7 @@ class DiscountParser:
                     "discount":  calc_discount(old_p, new_p),
                     "link":      link,
                     "shop":      "Sulpak",
+                    "category":  "tech",
                 })
             
             if len(cards) < 10: break
@@ -231,7 +232,6 @@ class DiscountParser:
         result: List[Dict[str, Any]] = []
         seen_ids = set()
         
-        # Сначала чекаем саму страницу акций
         for page in range(1, 4):
             url = f"https://www.sulpak.kz/SaleLoadProducts/{page}/~/~/0-2147483647/~/~/popularitydesc/tiles"
             r = await safe_request(session, "POST", url, headers={"X-Requested-With": "XMLHttpRequest"})
@@ -263,12 +263,10 @@ class DiscountParser:
                     result.append({
                         "id": f"sp_{code}", "title": title, "old_price": fmt_price(old_p),
                         "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
-                        "link": link, "shop": "Sulpak",
+                        "link": link, "shop": "Sulpak", "category": "tech",
                     })
             except: break
 
-        # Затем добавляем обход по популярным категориям
-        # Правильные сегменты Sulpak (версия Алматы)
         categories = [
             "smartfoniy", "noutbukiy", "led_oled_televizoriy", 
             "holodilnikiy", "stiralniye_mashiniy", "pyilesosyi"
@@ -281,13 +279,9 @@ class DiscountParser:
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
-    #  MECHTA  — теперь через _payload.js (обход 403 на API)
+    #  MECHTA
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_mechta(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        """
-        Mechta заблокировала /api/v3/ для серверных IP (403).
-        Переходим на парсинг _payload.js — тот же подход что и у Alser/Nuxt.
-        """
         result: List[Dict[str, Any]] = []
         seen_ids: set = set()
 
@@ -320,7 +314,6 @@ class DiscountParser:
                 raw = r.text
                 found_on_page = 0
 
-                # Ищем товары с oldPrice/old_price
                 blocks = re.split(r'(?="?id"?\s*:)', raw)
                 for block in blocks:
                     if "oldPrice" not in block and "old_price" not in block:
@@ -355,6 +348,7 @@ class DiscountParser:
                             "discount":  calc_discount(old_f, new_f),
                             "link":      f"https://www.mechta.kz/product/{slug}" if slug else "https://www.mechta.kz/",
                             "shop":      "Mechta 🔵",
+                            "category":  "tech",
                         })
                         found_on_page += 1
                     except Exception:
@@ -425,7 +419,6 @@ class DiscountParser:
                     title    = (o.get("title") or o.get("name") or "").strip()
                     shop_link = o.get("shopLink") or ""
 
-                    # unitPrice и unitSalePrice — это числа (int), не объекты!
                     old_p = o.get("unitPrice")
                     new_p = o.get("unitSalePrice")
 
@@ -434,7 +427,6 @@ class DiscountParser:
                     if int(old_p) <= int(new_p):
                         continue
 
-                    # Строим ссылку из shopLink
                     link = f"https://kaspi.kz{shop_link}" if shop_link else f"https://kaspi.kz/shop/p/{pid}/"
 
                     result.append({
@@ -445,6 +437,7 @@ class DiscountParser:
                         "discount":  calc_discount(old_p, new_p),
                         "link":      link,
                         "shop":      "Kaspi",
+                        "category":  "tech",
                     })
                 except Exception as e:
                     logger.error(f"Kaspi item error: {e}")
@@ -543,6 +536,7 @@ class DiscountParser:
                                 else link or f"https://alser.kz/c/{category}"
                             ),
                             "shop":      "Alser",
+                            "category":  "tech",
                         })
                         found_on_page += 1
                     except Exception:
@@ -643,6 +637,7 @@ class DiscountParser:
                     "discount":  calc_discount(old_p, new_p),
                     "link":      link,
                     "shop":      "Белый Ветер 🌪",
+                    "category":  "tech",
                 })
 
             logger.info(f"Белый Ветер: найдено {len(result)} товаров из YML")
@@ -652,7 +647,7 @@ class DiscountParser:
             return []
 
     # ─────────────────────────────────────────────────────────────────────────
-    #  MELOMAN.KZ  — Книги, комиксы, настолки
+    #  MELOMAN.KZ
     # ─────────────────────────────────────────────────────────────────────────
 
     def _meloman_extract_price(self, html: str) -> Optional[int]:
@@ -660,17 +655,12 @@ class DiscountParser:
             return None
         
         soup = BeautifulSoup(html, "html.parser")
-        # Ищем специальную цену, если она есть
         special = soup.select_one(".special-price [data-price-amount]")
         if special:
             amt = special.get("data-price-amount")
             if amt and amt.replace(".", "").isdigit():
                 return int(float(amt))
 
-        # Если специальной нет, ищем финальную цену (которая может быть единственной)
-        # Но важно не зацепить oldPrice, если мы ищем текущую цену.
-        # В Meloman финальная цена обычно в .price-container.price-final_price
-        # но если есть скидка, их там ДВЕ.
         final = soup.select_one(".special-price [data-price-amount]") or \
                 soup.select_one("[data-price-type='finalPrice']") or \
                 soup.select_one(".price-final_price [data-price-amount]")
@@ -687,7 +677,6 @@ class DiscountParser:
             return None
 
         soup = BeautifulSoup(html, "html.parser")
-        # Обычная цена (старая)
         el = soup.select_one(".old-price [data-price-amount]") or \
              soup.select_one("[data-price-type='oldPrice']")
         
@@ -704,13 +693,6 @@ class DiscountParser:
         product_ids: List[str],
         headers: Dict,
     ) -> Dict[str, str]:
-        """
-        Запрашивает loyalty/products/prices/ батчами по 100 ID.
-
-        Сайт ожидает параметры вида ids%5B%5D=111&ids%5B%5D=222
-        (%5B%5D — это URL-encoded []).
-        Параметр _ — Unix-timestamp в миллисекундах (cache-buster).
-        """
         CHUNK = 100
         prices: Dict[str, str] = {}
         api_url = "https://www.meloman.kz/loyalty/products/prices/"
@@ -766,12 +748,10 @@ class DiscountParser:
 
                 soup = BeautifulSoup(r.text, "html.parser")
 
-                # ── Собираем ID и мета-информацию со страницы ──────────────
                 page_ids: List[str] = []
                 info_map: Dict[str, Dict] = {}
 
                 for card in soup.select(".product-item"):
-                    # product-id живёт на разных элементах — проверяем оба
                     pid_el = card.select_one(
                         "[data-product-id]"
                     ) or card.select_one("form[data-product-id]")
@@ -795,7 +775,6 @@ class DiscountParser:
                 if not page_ids:
                     break
 
-                # ── Запрашиваем цены через loyalty API ─────────────────────
                 prices_data = await self._meloman_fetch_prices(session, page_ids, headers)
 
                 for pid, html_fragment in prices_data.items():
@@ -805,10 +784,7 @@ class DiscountParser:
                     new_p = self._meloman_extract_price(html_fragment)
                     old_p = self._meloman_extract_old_price(html_fragment)
 
-                    # Товар без скидки — пропускаем
                     if not new_p or not old_p or old_p <= new_p:
-                        if old_p:
-                            logger.info(f"Meloman DEBUG: pid={pid}, np={new_p}, op={old_p}, frag_len={len(html_fragment)}")
                         continue
 
                     uid = f"ml_{pid}"
@@ -824,6 +800,7 @@ class DiscountParser:
                         "discount":  calc_discount(old_p, new_p),
                         "link":      info_map[pid]["link"],
                         "shop":      "Meloman 📚",
+                        "category":  "other",
                     })
 
                 logger.info(
@@ -902,6 +879,7 @@ class DiscountParser:
                     "discount":  calc_discount(old_p, new_p),
                     "link":      f"https://fmobile.kz/category/{cat_slug}/{slug}",
                     "shop":      "Freedom Mobile 🟢",
+                    "category":  "tech",
                 })
             
             if len(items) < 50:
@@ -917,11 +895,11 @@ class DiscountParser:
     async def fetch_adidas(self, session: AsyncSession) -> List[Dict[str, Any]]:
         base_url = "https://adidas.kz"
         categories = {
-            "muzhchina/obuv":    "Мужская обувь",
-            "zhenshchina/obuv":  "Женская обувь",
+            "muzhchiny/obuv":    "Мужская обувь",
+            "zhenshhiny/obuv":   "Женская обувь",
             "deti/obuv":         "Детская обувь",
-            "muzhchina/odezhda": "Мужская одежда",
-            "zhenshchina/odezhda": "Женская одежда",
+            "muzhchiny/odezhda": "Мужская одежда",
+            "zhenshhiny/odezhda": "Женская одежда",
             "deti/odezhda":      "Детская одежда",
             "aksessuary":        "Аксессуары",
         }
@@ -990,6 +968,7 @@ class DiscountParser:
                                 "discount":  calc_discount(old_p, new_p),
                                 "link":      p_url,
                                 "shop":      "Adidas KZ 👟",
+                                "category":  "fashion",
                             })
             
             await asyncio.sleep(0.5)
