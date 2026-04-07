@@ -853,7 +853,7 @@ class DiscountParser:
         result: List[Dict[str, Any]] = []
         seen_ids = set()
 
-        for page in range(1, 15):
+        for page in range(1, 51):
             params = {
                 "channel": "ONLINE",
                 "city_slug": CITY_SLUG_MECHTA, # almaty
@@ -897,7 +897,7 @@ class DiscountParser:
                     "old_price": fmt_price(old_p),
                     "new_price": fmt_price(new_p),
                     "discount":  calc_discount(old_p, new_p),
-                    "link":      f"https://fmobile.kz/product/{slug}",
+                    "link":      f"https://fmobile.kz/{slug}",
                     "shop":      "Freedom Mobile 🟢",
                 })
             
@@ -1029,8 +1029,8 @@ class DiscountParser:
                             return self._meloman_extract_price(html_fragment)
 
                 elif shop == "Freedom Mobile":
-                    # Для Freedom Mobile вытаскиваем slug из URL и запрашиваем API
-                    m = re.search(r"/product/([^/]+)", url)
+                    # Для Freedom Mobile вытаскиваем slug из URL (он идет сразу после домена)
+                    m = re.search(r"fmobile\.kz/([^/?#]+)", url)
                     if m:
                         slug = m.group(1)
                         api_url = f"https://api.fmobile.kz/catalog/api/v2/catalog/listing"
