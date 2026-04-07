@@ -478,7 +478,12 @@ class DiscountParser:
     #  INTERTOP
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_intertop(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        cats = {"men/shoes": "Мужская обувь", "women/shoes": "Женская обувь"}
+        cats = {
+            "men/shoes": "Мужская обувь",
+            "women/shoes": "Женская обувь",
+            "men/clothing": "Мужская одежда",
+            "women/clothing": "Женская одежда"
+        }
         res = []
         seen = set()
         for slug, label in cats.items():
@@ -486,22 +491,41 @@ class DiscountParser:
             r = await safe_request(session, "GET", url, timeout=30)
             if not r: continue
             soup = BeautifulSoup(r.text, "html.parser")
-            for card in soup.select("[class*='product-tile'], [class*='ProductCard']")[:30]:
+            
+            items = soup.select(".in-product-tile")
+            for card in items:
                 try:
+                    brand = card.select_one(".in-product-tile__product-brand")
+                    name = card.select_one(".in-product-tile__product-name")
+                    if not (brand and name): continue
+                    
+                    title = f"[{label}] {brand.get_text(strip=True)} {name.get_text(strip=True)}"
+                    
                     l_el = card.select_one("a[href*='/product/']")
                     if not l_el: continue
-                    l = f"https://intertop.kz{l_el['href']}" if not l_el['href'].startswith("http") else l_el['href']
-                    if l in seen: continue
-                    txt = card.get_text(" ", strip=True)
-                    matches = re.findall(r"([\d\s]{4,8})\s*₸", txt)
-                    prices = sorted([p for p in (self._parse_price_val(m) for m in matches) if p])
-                    if len(prices) >= 2:
-                        seen.add(l)
-                        res.append({
-                            "id": f"it_{hash(l)}", "title": f"[{label}] {txt[:40]}", "old_price": fmt_price(prices[-1]),
-                            "new_price": fmt_price(prices[0]), "discount": calc_discount(prices[-1], prices[0]),
-                            "link": l, "shop": "Intertop 👟", "category": "fashion",
-                        })
+                    link = f"https://intertop.kz{l_el['href']}" if l_el['href'].startswith("/") else l_el['href']
+                    
+                    if link in seen: continue
+                    
+                    price_regular = card.select_one(".in-price__regular")
+                    price_actual = card.select_one(".in-price__actual")
+                    
+                    if price_regular and price_actual:
+                        op = self._parse_price_val(price_regular.get_text())
+                        np = self._parse_price_val(price_actual.get_text())
+                        
+                        if np and op and op > np:
+                            seen.add(link)
+                            res.append({
+                                "id": f"it_{hash(link)}",
+                                "title": title,
+                                "old_price": fmt_price(op),
+                                "new_price": fmt_price(np),
+                                "discount": calc_discount(op, np),
+                                "link": link,
+                                "shop": "Intertop 👟",
+                                "category": "fashion",
+                            })
                 except: continue
         return res
 

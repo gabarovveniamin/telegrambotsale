@@ -38,5 +38,15 @@ async def debug_test():
         except Exception as e:
             print(f"Sulpak failed: {e}")
 
+        print("\n--- Testing Intertop ---")
+        try:
+            intertop = await parser.fetch_intertop(session)
+            print(f"Intertop found: {len(intertop)} discounts")
+            if intertop:
+                for item in intertop[:3]:
+                    print(f"  - {item['title']}: {item['old_price']} -> {item['new_price']} ({item['discount']}%)")
+        except Exception as e:
+            print(f"Intertop failed: {e}")
+
 if __name__ == "__main__":
     asyncio.run(debug_test())
