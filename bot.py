@@ -664,6 +664,26 @@ async def cmd_salemechta(message: types.Message):
     await send_sale_chunks(message, items, header)
 
 
+@router.message(Command("freedomsale"))
+async def cmd_salefreedom(message: types.Message):
+    """Команда для вывода акций Freedom Mobile."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Freedom Mobile...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_freedom(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок во Freedom Mobile."); return
+
+    header = f"🟢 <b>Скидки Freedom Mobile (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
 async def send_sale_chunks(message, items, header):
     """Вспомогательная функция для отправки товаров кусками."""
     # Сортируем по проценту скидки перед выводом

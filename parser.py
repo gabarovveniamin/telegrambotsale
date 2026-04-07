@@ -840,6 +840,75 @@ class DiscountParser:
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  FREEDOM MOBILE
+    # ─────────────────────────────────────────────────────────────────────────
+    async def fetch_freedom(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        url = "https://api.fmobile.kz/catalog/api/v2/catalog/listing"
+        headers = {
+            **self.base_headers,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://fmobile.kz/",
+            "Origin": "https://fmobile.kz",
+        }
+        result: List[Dict[str, Any]] = []
+        seen_ids = set()
+
+        for page in range(1, 15):
+            params = {
+                "channel": "ONLINE",
+                "city_slug": CITY_SLUG_MECHTA, # almaty
+                "page": page,
+                "size": 50,
+            }
+            r = await safe_request(session, "GET", url, headers=headers, params=params)
+            if r is None:
+                break
+            
+            try:
+                data = r.json()
+            except Exception as e:
+                logger.error(f"Freedom JSON error (page {page}): {e}")
+                break
+            
+            res_node = data.get("result") or {}
+            items = res_node.get("items") or []
+            if not items:
+                break
+                
+            for item in items:
+                sku = str(item.get("sku") or item.get("model_stock_id") or "")
+                if not sku or sku in seen_ids:
+                    continue
+                seen_ids.add(sku)
+                
+                title = item.get("model_stock_name") or item.get("name") or ""
+                new_p = item.get("price")
+                old_p = item.get("old_price") or 0
+                slug  = item.get("model_stock_slug") or ""
+                
+                if not (title and new_p and old_p):
+                    continue
+                if old_p <= new_p:
+                    continue
+                    
+                result.append({
+                    "id":        f"fm_{sku}",
+                    "title":     title,
+                    "old_price": fmt_price(old_p),
+                    "new_price": fmt_price(new_p),
+                    "discount":  calc_discount(old_p, new_p),
+                    "link":      f"https://fmobile.kz/product/{slug}",
+                    "shop":      "Freedom Mobile 🟢",
+                })
+            
+            if len(items) < 50:
+                break
+            await asyncio.sleep(0.5)
+            
+        logger.info(f"Freedom Mobile: найдено {len(result)} акций")
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  АГРЕГАТОР
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_discounts(self) -> List[Dict[str, Any]]:
@@ -852,6 +921,7 @@ class DiscountParser:
                 self.fetch_alser(session),
                 self.fetch_shopkz(session),
                 self.fetch_meloman(session),
+                self.fetch_freedom(session),
                 return_exceptions=True,
             )
 
@@ -957,6 +1027,25 @@ class DiscountParser:
                         if pr.status_code == 200:
                             html_fragment = pr.json().get("prices", {}).get(pid, "")
                             return self._meloman_extract_price(html_fragment)
+
+                elif shop == "Freedom Mobile":
+                    # Для Freedom Mobile вытаскиваем slug из URL и запрашиваем API
+                    m = re.search(r"/product/([^/]+)", url)
+                    if m:
+                        slug = m.group(1)
+                        api_url = f"https://api.fmobile.kz/catalog/api/v2/catalog/listing"
+                        params = {
+                            "channel": "ONLINE",
+                            "city_slug": CITY_SLUG_MECHTA,
+                            "model_stock_slug": slug,
+                        }
+                        pr = await session.get(api_url, params=params, timeout=10)
+                        if pr.status_code == 200:
+                            data = pr.json()
+                            res_node = data.get("result") or {}
+                            items = res_node.get("items") or []
+                            if items:
+                                return items[0].get("price")
 
                 if price_text:
                     clean = re.sub(r"[^\d]", "", price_text)

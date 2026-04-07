@@ -1,0 +1,44 @@
+# Freedom Mobile Parser Rules
+
+## [API] Structure: api.fmobile.kz
+- **Base URL**: `https://api.fmobile.kz/catalog/api/v2/catalog/listing`
+- **Default Params**:
+  - `channel`: `ONLINE`
+  - `city_slug`: `almaty` (can be changed to other cities like `astana`, `shymkent`, etc.)
+  - `page`: `1`
+  - `size`: `50` (maximum items per request)
+- **Filtering**:
+  - `model_ids`: Comma-separated IDs (e.g., `3994,3995`)
+
+## Data Fields
+The parser extracts:
+- `name`: Product name (`model_stock_name`)
+- `brand`: Brand name (`brand_name`)
+- `category`: Category name (`category_name`)
+- `sku`: SKU number
+- `price`: Main price
+- `subs_price`: Price when buying with subscription (installment)
+- `kaspi_amount`: Kaspi store price
+- `cashback`: Freedom Bank cashback
+- `image`: Image URL (`image_path`)
+
+## Coding Rules & Style
+- **Python Style**: Use type hints for functions.
+- **Requests**: Always use `raise_for_status()` to catch HTTP errors.
+- **Pagination**: 
+  - Loop through pages incrementing `page`.
+  - Stop when `items` list is empty OR `total` count is reached.
+  - API response keys can vary (`data`, `results`, `items`). Use `.get()` safely.
+- **Delay**: Always keep a delay between requests (minimum 0.5s) to avoid being rate-limited/banned.
+- **Encoding**: When saving CSV/JSON, use `utf-8` (preferably `utf-8-sig` for CSV on Windows).
+
+## Best Practices
+- **Logging**: Use clear print statements for progress tracking during parsing.
+- **Error Handling**: Use `try-except` for network operations and parsing logic.
+- **Modularization**: Keep `fetch`, `parse`, and `save` operations in separate functions.
+
+## Future Tasks
+- Add price monitoring (comparing current prices with previous snapshots).
+- Integrate Telegram notifications on price drops.
+- Implement more complex filtering (categories, brands, price ranges).
+- Use a database (PostgreSQL/SQLite) instead of flat JSON files for persistence.
