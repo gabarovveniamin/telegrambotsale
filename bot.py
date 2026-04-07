@@ -684,6 +684,26 @@ async def cmd_salefreedom(message: types.Message):
     await send_sale_chunks(message, items, header)
 
 
+@router.message(Command("adidassale"))
+async def cmd_saleadidas(message: types.Message):
+    """Команда для вывода акций Adidas KZ."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Adidas KZ...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_adidas(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Adidas KZ."); return
+
+    header = f"👟 <b>Скидки Adidas KZ (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
 async def send_sale_chunks(message, items, header):
     """Вспомогательная функция для отправки товаров кусками."""
     # Сортируем по проценту скидки перед выводом

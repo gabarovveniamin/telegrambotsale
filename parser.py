@@ -912,6 +912,92 @@ class DiscountParser:
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  ADIDAS KZ
+    # ─────────────────────────────────────────────────────────────────────────
+    async def fetch_adidas(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        base_url = "https://adidas.kz"
+        categories = {
+            "muzhchina/obuv":    "Мужская обувь",
+            "zhenshchina/obuv":  "Женская обувь",
+            "deti/obuv":         "Детская обувь",
+            "muzhchina/odezhda": "Мужская одежда",
+            "zhenshchina/odezhda": "Женская одежда",
+            "deti/odezhda":      "Детская одежда",
+            "aksessuary":        "Аксессуары",
+        }
+        headers = {
+            **self.base_headers,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": "https://adidas.kz/",
+        }
+        result: List[Dict[str, Any]] = []
+        seen_ids = set()
+
+        for slug, label in categories.items():
+            # Парсим только первую страницу каждой категории для мониторинга новинок
+            url = f"{base_url}/{slug}/"
+            r = await safe_request(session, "GET", url, headers=headers)
+            if r is None:
+                continue
+
+            # Используем JSON-LD парсинг (как в adidas_kz_parser.py)
+            soup = BeautifulSoup(r.text, "html.parser")
+            scripts = soup.find_all("script", {"type": "application/ld+json"})
+
+            for script in scripts:
+                try:
+                    content = script.string or ""
+                    if not content: continue
+                    data = json.loads(content)
+                except: continue
+
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") == "ItemList":
+                        for list_item in item.get("itemListElement", []):
+                            prod = list_item.get("item", {}) if list_item.get("@type") == "ListItem" else list_item
+                            if not prod: continue
+                            
+                            name = prod.get("name", "").strip()
+                            sku  = prod.get("sku") or ""
+                            if not name or sku in seen_ids: continue
+                            
+                            offers = prod.get("offers", {})
+                            if isinstance(offers, list): offers = offers[0] if offers else {}
+                            
+                            new_p = None
+                            old_p = None
+                            if isinstance(offers, dict):
+                                try:
+                                    raw_new = offers.get("price") or offers.get("lowPrice")
+                                    if raw_new: new_p = int(float(str(raw_new).replace(" ","")))
+                                    raw_old = offers.get("highPrice")
+                                    if raw_old: old_p = int(float(str(raw_old).replace(" ","")))
+                                except: pass
+
+                            if not (new_p and old_p and old_p > new_p):
+                                continue
+
+                            seen_ids.add(sku)
+                            p_url = prod.get("url") or list_item.get("url") or ""
+                            if p_url and not p_url.startswith("http"): p_url = base_url + p_url
+
+                            result.append({
+                                "id":        f"ad_{sku}",
+                                "title":     f"[{label}] {name}",
+                                "old_price": fmt_price(old_p),
+                                "new_price": fmt_price(new_p),
+                                "discount":  calc_discount(old_p, new_p),
+                                "link":      p_url,
+                                "shop":      "Adidas KZ 👟",
+                            })
+            
+            await asyncio.sleep(0.5)
+
+        logger.info(f"Adidas KZ: найдено {len(result)} акций")
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  АГРЕГАТОР
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_discounts(self) -> List[Dict[str, Any]]:
@@ -925,6 +1011,7 @@ class DiscountParser:
                 self.fetch_shopkz(session),
                 self.fetch_meloman(session),
                 self.fetch_freedom(session),
+                self.fetch_adidas(session),
                 return_exceptions=True,
             )
 
@@ -1052,6 +1139,23 @@ class DiscountParser:
                             items = res_node.get("items") or []
                             if items:
                                 return items[0].get("price")
+
+                elif shop == "Adidas KZ":
+                    # Adidas KZ — используем JSON-LD со страницы товара
+                    scripts = soup.find_all("script", {"type": "application/ld+json"})
+                    for script in scripts:
+                        try:
+                            content = script.string or ""
+                            if not content: continue
+                            data = json.loads(content)
+                            items = data if isinstance(data, list) else [data]
+                            for item in items:
+                                if item.get("@type") == "Product":
+                                    offers = item.get("offers", {})
+                                    if isinstance(offers, list): offers = offers[0] if offers else {}
+                                    price = offers.get("price") or offers.get("lowPrice")
+                                    if price: return int(float(str(price).replace(" ","")))
+                        except: pass
 
                 if price_text:
                     clean = re.sub(r"[^\d]", "", price_text)
