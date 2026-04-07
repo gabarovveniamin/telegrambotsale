@@ -891,13 +891,16 @@ class DiscountParser:
                 if old_p <= new_p:
                     continue
                     
+                cat_slug = item.get("category_slug") or "catalog"
+                slug     = item.get("model_stock_slug") or ""
+                
                 result.append({
                     "id":        f"fm_{sku}",
                     "title":     title,
                     "old_price": fmt_price(old_p),
                     "new_price": fmt_price(new_p),
                     "discount":  calc_discount(old_p, new_p),
-                    "link":      f"https://fmobile.kz/{slug}",
+                    "link":      f"https://fmobile.kz/category/{cat_slug}/{slug}",
                     "shop":      "Freedom Mobile 🟢",
                 })
             
@@ -1029,14 +1032,17 @@ class DiscountParser:
                             return self._meloman_extract_price(html_fragment)
 
                 elif shop == "Freedom Mobile":
-                    # Для Freedom Mobile вытаскиваем slug из URL (он идет сразу после домена)
-                    m = re.search(r"fmobile\.kz/([^/?#]+)", url)
+                    # Для Freedom Mobile вытаскиваем категорию и слаг из URL
+                    # URL: .../category/some_slug/product_slug
+                    m = re.search(r"category/([^/]+)/([^/?#]+)", url)
                     if m:
-                        slug = m.group(1)
+                        cat_slug = m.group(1)
+                        slug = m.group(2)
                         api_url = f"https://api.fmobile.kz/catalog/api/v2/catalog/listing"
                         params = {
                             "channel": "ONLINE",
                             "city_slug": CITY_SLUG_MECHTA,
+                            "category_slug": cat_slug,
                             "model_stock_slug": slug,
                         }
                         pr = await session.get(api_url, params=params, timeout=10)

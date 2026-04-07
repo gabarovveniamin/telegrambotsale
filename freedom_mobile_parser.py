@@ -60,6 +60,8 @@ def parse_product(item: dict) -> dict:
         "kaspi_amount":      item.get("kaspi_amount"),     # цена Kaspi
         "cashback":          item.get("cashback_freedom_bank"),
         "slug":              item.get("model_stock_slug", ""),
+        "category_slug":     item.get("category_slug", ""),
+        "link":              f"https://fmobile.kz/category/{item.get('category_slug')}/{item.get('model_stock_slug')}",
         "image":             item.get("image_path", ""),
         "parsed_at":         datetime.now().isoformat(),
     }
