@@ -447,6 +447,7 @@ class DiscountParser:
         url = "https://api.fmobile.kz/catalog/api/v2/catalog/listing"
         heads = {**self.base_headers, "Referer": "https://fmobile.kz/", "Origin": "https://fmobile.kz"}
         res = []
+        seen = set()
         for page in range(1, 5):
             params = {"channel": "ONLINE", "city_slug": CITY_SLUG_MECHTA, "page": page, "size": 50}
             r = await safe_request(session, "GET", url, headers=heads, params=params)
@@ -456,6 +457,8 @@ class DiscountParser:
                 for i in items:
                     sku, title, np, op = i.get("sku"), i.get("model_stock_name"), i.get("price"), i.get("old_price")
                     if sku and title and np and op and op > np:
+                        if sku in seen: continue
+                        seen.add(sku)
                         res.append({
                             "id": f"fm_{sku}", "title": title, "old_price": fmt_price(op),
                             "new_price": fmt_price(np), "discount": calc_discount(op, np),
@@ -545,17 +548,22 @@ class DiscountParser:
             items = soup.select(".in-product-tile")
             for card in items:
                 try:
-                    brand = card.select_one(".in-product-tile__product-brand")
-                    name = card.select_one(".in-product-tile__product-name")
-                    if not (brand and name): continue
+                    brand_el = card.select_one(".in-product-tile__product-brand")
+                    name_el = card.select_one(".in-product-tile__product-name")
+                    if not (brand_el and name_el): continue
                     
-                    title = f"[{label}] {brand.get_text(strip=True)} {name.get_text(strip=True)}"
+                    pid = card.get("data-product-id") or card.get("data-product-sku")
                     
                     l_el = card.select_one("a[href*='/product/']")
                     if not l_el: continue
                     link = f"https://intertop.kz{l_el['href']}" if l_el['href'].startswith("/") else l_el['href']
                     
-                    if link in seen: continue
+                    # Стабильный ID по ссылке или PID
+                    import hashlib
+                    u_id = pid if pid else hashlib.md5(link.encode()).hexdigest()[:12]
+                    
+                    if u_id in seen: continue
+                    seen.add(u_id)
                     
                     price_regular = card.select_one(".in-price__regular")
                     price_actual = card.select_one(".in-price__actual")
@@ -565,10 +573,9 @@ class DiscountParser:
                         np = self._parse_price_val(price_actual.get_text())
                         
                         if np and op and op > np:
-                            seen.add(link)
                             res.append({
-                                "id": f"it_{hash(link)}",
-                                "title": title,
+                                "id": f"it_{u_id}",
+                                "title": f"[{label}] {brand_el.get_text(strip=True)} {name_el.get_text(strip=True)}",
                                 "old_price": fmt_price(op),
                                 "new_price": fmt_price(np),
                                 "discount": calc_discount(op, np),
