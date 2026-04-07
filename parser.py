@@ -977,6 +977,149 @@ class DiscountParser:
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  INTERTOP.KZ
+    # ─────────────────────────────────────────────────────────────────────────
+    async def fetch_intertop(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        """
+        Парсинг intertop.kz: Многостраничный режим с обходом Cloudflare.
+        Категория: fashion
+        """
+        base_url = "https://intertop.kz"
+        categories = {
+            "men/shoes":         "Мужская обувь",
+            "men/clothing":      "Мужская одежда",
+            "women/shoes":       "Женская обувь",
+            "women/clothing":    "Женская одежда",
+            "kids/shoes":        "Детская обувь",
+            "kids/clothing":     "Детская одежда",
+        }
+        
+        all_results = []
+        # Дедупликация по ссылке внутри одного прохода
+        seen_links = set()
+
+        for slug, label in categories.items():
+            for pg in range(1, 3): # Парсим по 2 страницы для каждой категории
+                url = f"{base_url}/ru-kz/shopping/catalog/{slug}/"
+                if pg > 1: url += f"?page={pg}"
+                
+                # Запрос с таймаутом и обходом
+                try:
+                    r = await safe_request(session, "GET", url, timeout=30)
+                    if not r: break
+                    
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    products = []
+                    
+                    # 1. JSON-LD (с поддержкой @graph)
+                    for script in soup.find_all("script", {"type": "application/ld+json"}):
+                        try:
+                            data = json.loads(script.string or "")
+                            items = []
+                            if isinstance(data, dict):
+                                if "@graph" in data: items = data["@graph"]
+                                else: items = [data]
+                            
+                            for item in items:
+                                if item.get("@type") == "ItemList":
+                                    for li in item.get("itemListElement", []):
+                                        p_raw = li.get("item", li)
+                                        if p_raw.get("@type") != "Product": continue
+                                        
+                                        u = p_raw.get("url") or li.get("url")
+                                        if not u: continue
+                                        full_u = u if u.startswith("http") else base_url + u
+                                        if full_u in seen_links: continue
+                                        
+                                        brand_d = p_raw.get("brand", {})
+                                        brand = brand_d.get("name") if isinstance(brand_d, dict) else str(brand_d)
+                                        name = p_raw.get("name")
+                                        
+                                        offers = p_raw.get("offers", {})
+                                        if isinstance(offers, list): offers = offers[0]
+                                        
+                                        pc = self._parse_price_val(offers.get("price") or offers.get("lowPrice"))
+                                        po = self._parse_price_val(offers.get("highPrice"))
+                                        
+                                        if pc:
+                                            seen_links.add(full_u)
+                                            products.append({
+                                                "id": f"it_{re.sub(r'[^a-z0-9]', '', full_u[-15:].lower())}",
+                                                "title": f"[{brand}] {name}" if brand else name,
+                                                "new_price": fmt_price(pc),
+                                                "old_price": fmt_price(po) if po else None,
+                                                "discount": calc_discount(po, pc),
+                                                "link": full_u,
+                                                "shop": "Intertop 👟",
+                                                "category": "fashion"
+                                            })
+                        except: continue
+
+                    # 2. Если JSON-LD дал мало результатов, добираем из HTML
+                    if len(products) < 10:
+                        cards = soup.select("[class*='in-product-tile']")
+                        for card in cards:
+                            try:
+                                l_el = card.select_one("a[href*='/product/']")
+                                if not l_el: continue
+                                href = l_el.get("href")
+                                full_u = href if href.startswith("http") else base_url + href
+                                if full_u in seen_links: continue
+                                
+                                # Текст карточки для цен
+                                text = re.sub(r"-\d+%", "", card.get_text(" ", strip=True))
+                                matches = re.findall(r"(?:₸\s*([\d\s]{4,8}))|(([\d\s]{4,8})\s*₸)", text)
+                                found_v = []
+                                for m in matches:
+                                    for part in m:
+                                        v = self._parse_price_val(part)
+                                        if v: found_v.append(v)
+                                
+                                vals = sorted(list(set(found_v)))
+                                if not vals: continue
+                                pc = vals[0]
+                                po = vals[-1] if len(vals) > 1 else None
+                                
+                                if not pc: continue
+                                seen_links.add(full_u)
+                                brand = card.select_one("[class*='brand']").get_text(strip=True) if card.select_one("[class*='brand']") else "Бренд"
+                                name = card.select_one("[class*='name']").get_text(strip=True) if card.select_one("[class*='name']") else "Товар"
+                                
+                                products.append({
+                                    "id": f"it_{re.sub(r'[^a-z0-9]', '', full_u[-15:].lower())}",
+                                    "title": f"[{brand}] {name}",
+                                    "new_price": fmt_price(pc),
+                                    "old_price": fmt_price(po) if po else None,
+                                    "discount": calc_discount(po, pc),
+                                    "link": full_u,
+                                    "shop": "Intertop 👟",
+                                    "category": "fashion"
+                                })
+                            except: continue
+                    
+                    if not products: break # Конец страниц
+                    all_results.extend(products)
+                    
+                    # Пауза между страницами
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    logger.error(f"Intertop error {url}: {e}")
+                    break
+            
+            # Пауза между категориями
+            await asyncio.sleep(10)
+            
+        logger.info(f"Intertop KZ: найдено {len(all_results)} акций")
+        return all_results
+
+    def _parse_price_val(self, raw) -> Optional[int]:
+        if raw is None: return None
+        digits = re.sub(r"[^\d]", "", str(raw))
+        val = int(digits) if digits else None
+        if val and (val < 1000 or val > 1000000): return None
+        return val
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  АГРЕГАТОР
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_discounts(self) -> List[Dict[str, Any]]:
@@ -993,6 +1136,14 @@ class DiscountParser:
                 self.fetch_adidas(session),
                 return_exceptions=True,
             )
+
+            # Intertop запускаем отдельно и последовательно, так как он тяжелый и часто 524-тит
+            try:
+                intertop_results = await self.fetch_intertop(session)
+                results.append(intertop_results)
+            except Exception as e:
+                logger.error(f"Intertop sequential fetch error: {e}")
+                results.append([])
 
         all_items: List[Dict[str, Any]] = []
         seen_ids: set = set()

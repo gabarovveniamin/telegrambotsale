@@ -249,7 +249,7 @@ async def cb_settings_categories(callback: types.CallbackQuery):
     
     categories = {
         "tech":    "💻 Электроника и Техника",
-        "fashion": "👟 Одежда и Обувь (Adidas)",
+        "fashion": "👟 Одежда и Обувь (Adidas, Intertop)",
         "other":   "📚 Другое (книги, игры)"
     }
     
@@ -784,6 +784,26 @@ async def cmd_salesulpak(message: types.Message):
         await message.answer("Пока нет скидок в Sulpak."); return
 
     header = f"🔴 <b>Скидки Sulpak (Найдено: {len(items)})</b>\n"
+    await send_sale_chunks(message, items, header)
+
+
+@router.message(Command("intertopsale"))
+async def cmd_intertopsale(message: types.Message):
+    """Команда для вывода акций Intertop."""
+    from parser import parser
+    from curl_cffi.requests import AsyncSession
+    await message.answer("🔄 <b>Начинаю собирать скидки с Intertop...</b>", parse_mode="HTML")
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            async with AsyncSession(impersonate=parser.impersonate) as session:
+                items = await parser.fetch_intertop(session)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}"); return
+
+    if not items:
+        await message.answer("Пока нет скидок в Intertop."); return
+
+    header = f"👟 <b>Скидки Intertop (Найдено: {len(items)})</b>\n"
     await send_sale_chunks(message, items, header)
 
 
