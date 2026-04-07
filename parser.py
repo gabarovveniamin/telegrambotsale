@@ -343,51 +343,101 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     #  MELOMAN (Loyalty API)
     # ─────────────────────────────────────────────────────────────────────────
-    def _meloman_extract_price(self, h):
-        if not h: return None
-        s = BeautifulSoup(h, "html.parser")
-        el = s.select_one("[data-price-amount]")
-        return int(float(el["data-price-amount"])) if el else None
+    def _meloman_extract_price(self, html: str) -> Optional[int]:
+        if not html or html == "-": return None
+        m = re.search(r'data-price-amount=["\']?(\d+)["\']?', html)
+        if m: return int(m.group(1))
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.find(attrs={"data-price-amount": True})
+        try: return int(float(el["data-price-amount"])) if el else None
+        except: return None
 
-    def _meloman_extract_old_price(self, h):
-        if not h: return None
-        s = BeautifulSoup(h, "html.parser")
-        el = s.select_one(".old-price [data-price-amount]")
-        return int(float(el["data-price-amount"])) if el else None
+    def _meloman_extract_old_price(self, html: str) -> Optional[int]:
+        if not html: return None
+        m = re.search(r'data-price-type=["\']oldPrice["\'][^>]*data-price-amount=["\']?(\d+)["\']?', html, re.S)
+        if m: return int(m.group(1))
+        m = re.search(r'data-price-amount=["\']?(\d+)["\']?[^>]*data-price-type=["\']oldPrice["\']', html, re.S)
+        if m: return int(m.group(1))
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one(".old-price [data-price-amount], .price-old [data-price-amount], [data-price-type='oldPrice']")
+        try: return int(float(el["data-price-amount"])) if el and el.get("data-price-amount") else None
+        except: return None
 
     async def _meloman_fetch_prices(self, session, ids, heads):
         api = "https://www.meloman.kz/loyalty/products/prices/"
-        qs = "&".join(f"ids%5B%5D={i}" for i in ids[:100])
-        r = await safe_request(session, "GET", f"{api}?{qs}", headers=heads)
-        return r.json().get("prices", {}) if r else {}
+        prices = {}
+        for chunk in [ids[i:i + 100] for i in range(0, len(ids), 100)]:
+            qs = "&".join(f"ids%5B%5D={i}" for i in chunk)
+            ts = int(time.time() * 1000)
+            url = f"{api}?{qs}&_={ts}"
+            r = await safe_request(session, "GET", url, headers=heads)
+            if r:
+                try:
+                    data = r.json()
+                    if isinstance(data, dict):
+                        prices.update(data.get("prices", {}))
+                except: continue
+        return prices
 
     async def fetch_meloman(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        cats = ["books", "videogames", "toys-and-entertainment"]
+        cats = ["catalogsearch/result/?q=sale", "books", "videogames", "toys-and-entertainment", "shkola-kancelyariya-19236"]
         res = []
         seen = set()
-        heads = {**self.base_headers, "X-Requested-With": "XMLHttpRequest"}
+        heads = {
+            **self.base_headers,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": "https://www.meloman.kz/",
+        }
         for cat in cats:
-            r = await safe_request(session, "GET", f"https://www.meloman.kz/{cat}/", headers=heads)
-            if not r: continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            p_ids, info = [], {}
-            for card in soup.select(".product-item"):
-                pid = card.get("data-product-id") or (card.select_one("[data-product-id]").get("data-product-id") if card.select_one("[data-product-id]") else None)
-                if not pid: continue
-                link_el = card.select_one("a.product-item-link")
-                if link_el:
-                    info[pid] = {"t": link_el.get_text(strip=True), "l": link_el["href"]}
-                    p_ids.append(pid)
-            prices = await self._meloman_fetch_prices(session, p_ids, heads)
-            for pid, html in prices.items():
-                np, op = self._meloman_extract_price(html), self._meloman_extract_old_price(html)
-                if np and op and op > np and pid not in seen:
-                    seen.add(pid)
-                    res.append({
-                        "id": f"ml_{pid}", "title": info[pid]["t"], "old_price": fmt_price(op),
-                        "new_price": fmt_price(np), "discount": calc_discount(op, np),
-                        "link": info[pid]["l"], "shop": "Meloman 📚", "category": "other",
-                    })
+            max_pages = 10 if "q=" in cat else 3
+            for pg in range(1, max_pages + 1):
+                sep = "&" if "?" in cat else "?"
+                url = f"https://www.meloman.kz/{cat}" + (f"{sep}p={pg}" if pg > 1 or sep == "&" else "")
+                if pg == 1 and sep == "?": url = f"https://www.meloman.kz/{cat}/"
+                
+                r = await safe_request(session, "GET", url, headers=heads)
+                if not r: break
+                
+                try:
+                    data = r.json()
+                    html = data.get("categoryProducts") or data.get("products") or r.text
+                except:
+                    html = r.text
+
+                soup = BeautifulSoup(html, "html.parser")
+                p_ids, info = [], {}
+                cards = soup.select(".product-item")
+                if not cards: break
+
+                for card in cards:
+                    pid = card.get("data-product-id") or card.get("data-id-product")
+                    if not pid:
+                        el = card.select_one("[data-product-id], [data-id-product]")
+                        if el:
+                            pid = el.get("data-product-id") or el.get("data-id-product")
+                    
+                    if not pid: continue
+                    link_el = card.select_one("a.product-item-link")
+                    if link_el:
+                        info[pid] = {"t": link_el.get_text(strip=True), "l": link_el["href"]}
+                        p_ids.append(pid)
+                
+                if not p_ids: continue 
+
+                prices = await self._meloman_fetch_prices(session, p_ids, heads)
+                for pid, html in prices.items():
+                    np, op = self._meloman_extract_price(html), self._meloman_extract_old_price(html)
+                    if np and op and op > np and pid not in seen:
+                        seen.add(pid)
+                        res.append({
+                            "id": f"ml_{pid}", "title": info[pid]["t"], "old_price": fmt_price(op),
+                            "new_price": fmt_price(np), "discount": calc_discount(op, np),
+                            "link": info[pid]["l"], "shop": "Meloman 📚", "category": "other",
+                        })
+                
+                if len(p_ids) < 15: break
+                await asyncio.sleep(0.3)
         return res
 
     # ─────────────────────────────────────────────────────────────────────────
