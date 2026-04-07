@@ -61,7 +61,12 @@ class Database:
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_threshold INTEGER DEFAULT 0
             """)
             await conn.execute("""
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{tech,other}'
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS categories TEXT[] DEFAULT '{tech,fashion,other}'
+            """)
+            # Миграция: убеждаемся, что fashion добавлен всем существующим (если его там нет)
+            await conn.execute("""
+                UPDATE users SET categories = array_append(categories, 'fashion')
+                WHERE 'fashion' <> ALL(categories)
             """)
 
             # ── Subscriptions ──────────────────────────────────────────────────
