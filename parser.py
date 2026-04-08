@@ -28,11 +28,18 @@ RETRY_DELAY    = 2.0
 def fmt_price(value) -> str:
     if value is None:
         return "—"
-    val = str(value).strip()
-    if not val or val == "0":
-        return "—"
-    val = re.sub(r"\s+", " ", val)
-    return f"{val} ₸"
+    try:
+        # Убираем всё кроме цифр, чтобы корректно преобразовать в число
+        digits = re.sub(r"[^\d]", "", str(value))
+        if not digits or digits == "0":
+            return "—"
+        
+        val = int(digits)
+        # Форматируем с разделением тысяч: 1234567 -> 1 234 567
+        formatted = f"{val:,}".replace(",", " ")
+        return f"{formatted} ₸"
+    except Exception:
+        return str(value) + " ₸"
 
 
 def calc_discount(old: Any, new: Any) -> int:
@@ -291,28 +298,103 @@ class DiscountParser:
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result = []
         seen_ids = set()
-        for cat in ["smartfony-i-planshety", "noutbuki-i-kompyutery", "televizory"]:
+        
+        def unescape(s):
+            try: return s.encode().decode('unicode-escape')
+            except: return s
+
+        categories = [
+            "smartfony", "planshety", "umnye-chasy", "fitnes-braslety", "baby-watch",
+            "naushniki-dlja-smartfonov", "portativnoe-audio", "aksessuary-dlja-smartfonov",
+            "noutbuki", "vneshnie-nakopiteli", "komplektujuschie-dlja-noutbukov",
+            "monitory", "aksessuary-dlja-pk", "setevoe-oborudovanie", "komplektujuschie",
+            "igrovye-konsoli", "igrovye-manipuljatory-i-aksessuary", "mebel",
+            "printery", "mfu", "rashodnye-materialy", "stacionarnye-telefony",
+            "pitanie", "stiralnye-i-susilnye-masiny", "malaa-bytovaa-tehnika",
+            "vse-tovary-dla-uborki", "jge-arnalgan-kerek-zaraktar", "vse-holodilniki",
+            "morozil-nye-kamery", "plity", "vinnye-shkafy", "ydys-zugys-masinalar",
+            "prigotovlenie-i-obrabotka-produktov", "prigotovlenie-napitkov",
+            "kuhonnaja-posuda", "plitalar", "duhovye-shkafy", "vytjazhki",
+            "posudomoechnye-mashiny", "vstraivaemye-holodilniki",
+            "vstraivaemye-mikrovolnovye-peci", "pribory-dlja-ukladki-volos",
+            "brite-i-strizka", "dlya-zdorovya", "uhod-za-polostu-rta", "dla-krasoty",
+            "televizory", "vse-saundbari", "proekcionnoe-oborudovanie",
+            "stacionarnoe-audio", "aksessuary-dlja-tv", "vse-kondicioneri",
+            "ventiljatory", "vodonagrevateli", "uvlazhniteli-vozduha", "obogrevateli",
+            "gadzhety-dlja-umnogo-doma", "umnyj-dom-sistemy-bezopastnosti",
+            "akyldy-dinamikter", "velosipedy", "otdih-i-sport",
+            "jekshn-kamery-accessory", "igrushki", "shini"
+        ]
+        for cat in categories:
             for page in range(1, 3):
                 url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
                 r = await safe_request(session, "GET", url, headers=self.base_headers)
                 if not r: break
+                
+                # Парсим аргументы функции (имена и значения)
+                try:
+                    # Извлекаем список имен аргументов: (function(a,b,c...){
+                    arg_names_match = re.search(r'function\((.*?)\)', r.text)
+                    # Извлекаем список значений аргументов: }(val1,val2,val3...))
+                    # Важно: значения в конце файла, после всех данных.
+                    arg_values_match = re.search(r'}\((.*)\)\)\s*$', r.text)
+                    
+                    val_map = {}
+                    if arg_names_match and arg_values_match:
+                        names = [n.strip() for n in arg_names_match.group(1).split(',')]
+                        # Упрощенный парсинг значений (могут быть строки, числа, null, false)
+                        # Используем json.loads, заменив JS-специфичные штуки
+                        raw_vals = arg_values_match.group(1)
+                        # Заменяем void 0 на null для совместимости с JSON
+                        json_ready = "[" + raw_vals.replace("void 0", "null") + "]"
+                        try:
+                            values = json.loads(json_ready)
+                            val_map = dict(zip(names, values))
+                        except: pass
+                except:
+                    val_map = {}
+
+                def get_val(raw):
+                    if not raw: return None
+                    raw = raw.strip()
+                    if raw.startswith('"') and raw.endswith('"'):
+                        return unescape(raw[1:-1])
+                    if raw in val_map:
+                        return val_map[raw]
+                    try: return float(raw)
+                    except: return raw
+
                 blocks = re.split(r'\{\s*"?id"?\s*:', r.text)
                 for b in blocks:
                     if "oldPrice" not in b: continue
                     try:
-                        title = re.search(r'title\s*:\s*"(.*?)"', b).group(1).replace("\\\"", "\"")
-                        sku = re.search(r'sku\s*:\s*"(.*?)"', b).group(1)
-                        price = float(re.search(r'(?<!"old)[Pp]rice\s*:\s*(\d+)', b).group(1))
-                        old = float(re.search(r'oldPrice\s*:\s*(\d+)', b).group(1))
-                        link = re.search(r'link_url\s*:\s*"(.*?)"', b).group(1).replace("\\u002f", "/")
+                        # Ищем ключи и значения (могут быть в кавычках или без)
+                        title_m = re.search(r'title\s*:\s*("(.*?)"|[\w$]+)', b)
+                        sku_m = re.search(r'sku\s*:\s*("(.*?)"|[\w$]+)', b)
+                        price_m = re.search(r'(?<!"old)[Pp]rice\s*:\s*("(.*?)"|[\w$]+)', b)
+                        old_m = re.search(r'oldPrice\s*:\s*("(.*?)"|[\w$]+)', b)
+                        link_m = re.search(r'link_url\s*:\s*("(.*?)"|[\w$]+)', b)
+                        
+                        if not (title_m and sku_m and price_m and old_m and link_m): continue
+                        
+                        title = get_val(title_m.group(1))
+                        sku = str(get_val(sku_m.group(1)))
+                        price = float(get_val(price_m.group(1)))
+                        old = float(get_val(old_m.group(1)))
+                        link = get_val(link_m.group(1))
+                        
+                        if not link.startswith("http"):
+                            link = f"https://alser.kz{link}"
+
                         if old > price and sku not in seen_ids:
                             seen_ids.add(sku)
                             result.append({
                                 "id": f"al_{sku}", "title": title, "old_price": fmt_price(int(old)),
                                 "new_price": fmt_price(int(price)), "discount": calc_discount(old, price),
-                                "link": f"https://alser.kz{link}", "shop": "Alser", "category": "tech",
+                                "link": link, "shop": "Alser", "category": "tech",
                             })
                     except: continue
+            await asyncio.sleep(1) # Задержка чтобы не словить 403
         return result
 
     # ─────────────────────────────────────────────────────────────────────────

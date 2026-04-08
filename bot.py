@@ -888,5 +888,5 @@ async def broadcast_message(text: str, premium_only: bool = False, min_discount:
 
 
 from admin_panel import admin_router
-dp.include_router(admin_router)
 dp.include_router(router)
+dp.include_router(admin_router)
