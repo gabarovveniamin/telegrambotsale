@@ -9,6 +9,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery,
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 )
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -51,9 +52,18 @@ def build_main_menu(user_id: int = None) -> InlineKeyboardMarkup:
     
     # Добавляем кнопку админа, если пользователь в списке
     if user_id in config.ADMIN_IDS:
-        buttons.append([InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin_menu")])
+        buttons.append([InlineKeyboardButton(text="🛠 Админ-панель (Inline)", callback_data="admin_menu")])
         
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_admin_reply_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⚙️ Админ панель", web_app=WebAppInfo(url="https://79.76.47.252.nip.io"))]
+        ],
+        resize_keyboard=True
+    )
 
 
 def build_premium_kb() -> InlineKeyboardMarkup:
@@ -130,13 +140,28 @@ async def cmd_start(message: types.Message):
     is_prem = await db.is_premium(user_id)
     premium_badge = "👑 <b>Premium</b>" if is_prem else "🆓 Бесплатный аккаунт"
 
+    # Если пишет админ — присылаем и Reply-клавиатуру с WebApp
+    reply_markup_to_send = build_main_menu(user_id)
+    if user_id in config.ADMIN_IDS:
+        # В aiogram 3.x мы можем отправить Reply-клавиатуру в сообщении. 
+        # Но основное меню у нас Inline. Мы можем отправить сначала сообщение с Reply-кнопкой,
+        # либо объединить (хотя Telegram не позволяет Inline и Reply в одном сообщении).
+        # Сделаем как в запросе: для админа основное сообщение идет с Reply-клавиатурой (WebApp),
+        # а инлайновое меню пришлем следующим сообщением или заменим.
+        
+        await message.answer(
+            "🛠 <b>Доступ разрешен.</b>\nВаша секретная кнопка админ-панели добавлена в меню.",
+            reply_markup=build_admin_reply_kb(),
+            parse_mode="HTML"
+        )
+
     await message.answer(
         f"👋 <b>Привет! Я бот для мониторинга скидок в Казахстане.</b>\n\n"
         f"🔔 Буду присылать уведомления о новых скидках!\n"
         f"📌 Статус: {premium_badge}"
         f"{referral_bonus_text}\n\n"
         f"Выбери раздел 👇",
-        reply_markup=build_main_menu(user_id),
+        reply_markup=reply_markup_to_send,
         parse_mode="HTML"
     )
 
