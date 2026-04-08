@@ -243,7 +243,14 @@ class DiscountParser:
                 for b in blocks:
                     if "oldPrice" not in b: continue
                     try:
-                        title = re.search(r'"?(?:name|title)"?\s*:\s*"(.*?)"', b).group(1).encode().decode("unicode_escape", errors="ignore")
+                        title_m = re.search(r'"?(?:name|title)"?\s*:\s*"(.*?)"', b)
+                        if not title_m: continue
+                        title = title_m.group(1)
+                        # Безопасное декодирование unicode-escapes (\u0421) без повреждения кириллицы
+                        if "\\u" in title:
+                            try: title = title.encode().decode("unicode_escape")
+                            except: pass
+                        
                         price = float(re.search(r'"?(?:finalPrice|price)"?\s*:\s*(\d+)', b).group(1))
                         old = float(re.search(r'"?(?:basePrice|oldPrice)"?\s*:\s*(\d+)', b).group(1))
                         slug = re.search(r'"?slug"?\s*:\s*"(.*?)"', b).group(1)
@@ -300,8 +307,12 @@ class DiscountParser:
         seen_ids = set()
         
         def unescape(s):
-            try: return s.encode().decode('unicode-escape')
-            except: return s
+            if not s or "\\" not in s: return s
+            try:
+                # Используем regex для замены только \uXXXX, чтобы не повредить уже декодированную кириллицу
+                return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
+            except:
+                return s
 
         categories = [
             "smartfony", "planshety", "umnye-chasy", "fitnes-braslety", "baby-watch",
@@ -331,21 +342,23 @@ class DiscountParser:
                 r = await safe_request(session, "GET", url, headers=self.base_headers)
                 if not r: break
                 
+                # Принудительно декодируем в utf-8, так как curl_cffi может ошибиться
+                try:
+                    content_text = r.content.decode('utf-8')
+                except:
+                    content_text = r.text
+
                 # Парсим аргументы функции (имена и значения)
                 try:
                     # Извлекаем список имен аргументов: (function(a,b,c...){
-                    arg_names_match = re.search(r'function\((.*?)\)', r.text)
+                    arg_names_match = re.search(r'function\((.*?)\)', content_text)
                     # Извлекаем список значений аргументов: }(val1,val2,val3...))
-                    # Важно: значения в конце файла, после всех данных.
-                    arg_values_match = re.search(r'}\((.*)\)\)\s*$', r.text)
+                    arg_values_match = re.search(r'}\((.*)\)\)\s*$', content_text)
                     
                     val_map = {}
                     if arg_names_match and arg_values_match:
                         names = [n.strip() for n in arg_names_match.group(1).split(',')]
-                        # Упрощенный парсинг значений (могут быть строки, числа, null, false)
-                        # Используем json.loads, заменив JS-специфичные штуки
                         raw_vals = arg_values_match.group(1)
-                        # Заменяем void 0 на null для совместимости с JSON
                         json_ready = "[" + raw_vals.replace("void 0", "null") + "]"
                         try:
                             values = json.loads(json_ready)
@@ -364,7 +377,7 @@ class DiscountParser:
                     try: return float(raw)
                     except: return raw
 
-                blocks = re.split(r'\{\s*"?id"?\s*:', r.text)
+                blocks = re.split(r'\{\s*"?id"?\s*:', content_text)
                 for b in blocks:
                     if "oldPrice" not in b: continue
                     try:
