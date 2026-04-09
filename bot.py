@@ -28,8 +28,10 @@ dp = Dispatcher()
 # ──────────────────────────────────────────────────────────────────────────────
 PREMIUM_PRICE_STARS = 150          # Цена в Telegram Stars (в месяц)
 PREMIUM_DAYS = 30                  # Длительность подписки (дни)
-REFERRAL_BONUS_DAYS = 7           # Бонус рефереру за каждую конверсию
+REFERRAL_BONUS_DAYS = 7           # Бонус рефереру за каждую конверсию (когда реферал купил Premium)
 REFERRAL_INVITEES_FOR_FREE = 3    # Сколько друзей нужно пригласить для бесплатного Premium
+REFERRAL_MILESTONE_WEEK = 3       # Рефералов для подарка: 1 неделя
+REFERRAL_MILESTONE_MONTH = 10     # Рефералов для подарка: 1 месяц
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FSM States
@@ -77,14 +79,33 @@ def build_premium_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def build_referral_kb(user_id: int) -> InlineKeyboardMarkup:
+async def build_referral_kb(user_id: int) -> InlineKeyboardMarkup:
     bot_username = config.BOT_USERNAME
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    ref_count = await db.get_referral_count(user_id)
+    reward_status = await db.get_ref_reward_status(user_id)
+
+    buttons = [
         [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text=Получай%20скидки%20первым%20с%20этим%20ботом!")],
         [InlineKeyboardButton(text="📋 Скопировать ссылку", callback_data="copy_ref_link")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
-    ])
+    ]
+
+    # Кнопка активации недели (3 рефералов)
+    if ref_count >= REFERRAL_MILESTONE_WEEK:
+        if reward_status["week_claimed"]:
+            buttons.append([InlineKeyboardButton(text="✅ Неделя Premium — уже активирована", callback_data="ref_reward_noop")])
+        else:
+            buttons.append([InlineKeyboardButton(text="🎁 Активировать 7 дней Premium (за 3 друга)", callback_data="ref_claim_week")])
+
+    # Кнопка активации месяца (10 рефералов)
+    if ref_count >= REFERRAL_MILESTONE_MONTH:
+        if reward_status["month_claimed"]:
+            buttons.append([InlineKeyboardButton(text="✅ Месяц Premium — уже активирован", callback_data="ref_reward_noop")])
+        else:
+            buttons.append([InlineKeyboardButton(text="🎁 Активировать 30 дней Premium (за 10 друзей)", callback_data="ref_claim_month")])
+
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -509,9 +530,10 @@ async def cmd_referral(message: types.Message):
 async def cb_referral_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     text = await _build_referral_text(user_id)
+    kb = await build_referral_kb(user_id)
     await callback.message.edit_text(
         text,
-        reply_markup=build_referral_kb(user_id),
+        reply_markup=kb,
         parse_mode="HTML",
         disable_web_page_preview=True
     )
@@ -534,9 +556,10 @@ async def cb_copy_ref_link(callback: types.CallbackQuery):
 
 async def _show_referral_menu(target, user_id: int):
     text = await _build_referral_text(user_id)
+    kb = await build_referral_kb(user_id)
     await target.answer(
         text,
-        reply_markup=build_referral_kb(user_id),
+        reply_markup=kb,
         parse_mode="HTML",
         disable_web_page_preview=True
     )
@@ -547,34 +570,103 @@ async def _build_referral_text(user_id: int) -> str:
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     ref_count = await db.get_referral_count(user_id)
     referrals = await db.get_referrals(user_id)
+    reward_status = await db.get_ref_reward_status(user_id)
 
-    # Количество конвертированных (купивших Premium)
     converted = sum(1 for r in referrals if r["rewarded"])
-    remaining = max(0, REFERRAL_INVITEES_FOR_FREE - ref_count)
 
-    progress_bar = ""
-    for i in range(REFERRAL_INVITEES_FOR_FREE):
-        progress_bar += "🟢" if i < ref_count else "⚪️"
+    # Прогресс бар к 10 (максимальный milestone)
+    max_milestone = REFERRAL_MILESTONE_MONTH
+    bar_count = min(ref_count, max_milestone)
+    progress_bar = "🟢" * bar_count + "⚪️" * (max_milestone - bar_count)
 
     lines = [
         f"🔗 <b>Реферальная программа</b>\n\n",
-        f"📊 Прогресс: {progress_bar} {ref_count}/{REFERRAL_INVITEES_FOR_FREE}\n",
+        f"📊 Прогресс: {progress_bar} {ref_count}/{max_milestone}\n",
         f"👥 Приглашено: <b>{ref_count}</b> чел.\n",
-        f"🎁 Принесли бонус (купили Premium): <b>{converted}</b>\n\n",
+        f"💰 Принесли бонус (купили Premium): <b>{converted}</b>\n\n",
+        f"<b>🎁 Награды за рефералов:</b>\n",
+    ]
+
+    # Статус наград
+    week_status = "✅ Получена" if reward_status["week_claimed"] else ("🔓 Доступна — нажми 'Активировать'" if ref_count >= REFERRAL_MILESTONE_WEEK else f"🔒 {REFERRAL_MILESTONE_WEEK - ref_count} до разблокировки")
+    month_status = "✅ Получена" if reward_status["month_claimed"] else ("🔓 Доступна — нажми 'Активировать'" if ref_count >= REFERRAL_MILESTONE_MONTH else f"🔒 {REFERRAL_MILESTONE_MONTH - ref_count} до разблокировки")
+
+    lines += [
+        f"3 друга → 7 дней Premium: {week_status}\n",
+        f"10 друзей → 30 дней Premium: {month_status}\n\n",
         f"<b>Как работает:</b>\n",
         f"1️⃣ Поделись своей ссылкой с друзьями\n",
         f"2️⃣ Когда они запустят бота — ты получишь +1 реферал\n",
-        f"3️⃣ Когда они купят Premium — ты получишь <b>+{REFERRAL_BONUS_DAYS} дней бесплатно!</b>\n\n",
+        f"3️⃣ При достижении 3 или 10 рефералов — нажми <b>Активировать</b>\n\n",
+        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>",
     ]
 
-    if ref_count >= REFERRAL_INVITEES_FOR_FREE:
-        lines.append(f"🏆 <b>Поздравляем!</b> Ты набрал {REFERRAL_INVITEES_FOR_FREE} рефералов!\n\n")
-    else:
-        lines.append(f"💡 Ещё <b>{remaining}</b> рефералов для получения бесплатного Premium!\n\n")
-
-    lines.append(f"🔗 Твоя ссылка:\n<code>{ref_link}</code>")
-
     return "".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Claim referral milestone rewards
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "ref_reward_noop")
+async def cb_ref_reward_noop(callback: types.CallbackQuery):
+    await callback.answer("✅ Эта награда уже активирована!", show_alert=False)
+
+
+@router.callback_query(F.data == "ref_claim_week")
+async def cb_claim_week(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    ref_count = await db.get_referral_count(user_id)
+
+    if ref_count < REFERRAL_MILESTONE_WEEK:
+        await callback.answer(f"❌ Нужно {REFERRAL_MILESTONE_WEEK} рефералов. У тебя: {ref_count}", show_alert=True)
+        return
+
+    claimed = await db.claim_ref_reward(user_id, "week")
+    if not claimed:
+        await callback.answer("✅ Ты уже активировал эту награду!", show_alert=True)
+        return
+
+    await db.activate_subscription(user_id, days=7, stars_paid=0)
+    await callback.answer("🎉 7 дней Premium активировано!", show_alert=True)
+    await callback.message.answer(
+        "🎁 <b>Поздравляем!</b>\n\n"
+        "Ты пригласил 3 друга и получил <b>7 дней Premium</b> бесплатно!\n"
+        "Наслаждайся уведомлениями о скидках 🔥",
+        parse_mode="HTML"
+    )
+    # Обновляем меню
+    text = await _build_referral_text(user_id)
+    kb = await build_referral_kb(user_id)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "ref_claim_month")
+async def cb_claim_month(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    ref_count = await db.get_referral_count(user_id)
+
+    if ref_count < REFERRAL_MILESTONE_MONTH:
+        await callback.answer(f"❌ Нужно {REFERRAL_MILESTONE_MONTH} рефералов. У тебя: {ref_count}", show_alert=True)
+        return
+
+    claimed = await db.claim_ref_reward(user_id, "month")
+    if not claimed:
+        await callback.answer("✅ Ты уже активировал эту награду!", show_alert=True)
+        return
+
+    await db.activate_subscription(user_id, days=30, stars_paid=0)
+    await callback.answer("🎉 30 дней Premium активировано!", show_alert=True)
+    await callback.message.answer(
+        "🏆 <b>Невероятно!</b>\n\n"
+        "Ты пригласил 10 друзей и получил <b>30 дней Premium</b> бесплатно!\n"
+        "Это целый месяц уведомлений о самых жирных скидках 💎",
+        parse_mode="HTML"
+    )
+    # Обновляем меню
+    text = await _build_referral_text(user_id)
+    kb = await build_referral_kb(user_id)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

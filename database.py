@@ -99,6 +99,14 @@ class Database:
                 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ;
             """)
 
+            # Migration: referral milestone reward tracking
+            await conn.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_reward_week_claimed BOOLEAN DEFAULT FALSE;
+            """)
+            await conn.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_reward_month_claimed BOOLEAN DEFAULT FALSE;
+            """)
+
             # ── Seen Items (dedup) ─────────────────────────────────────────────
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS seen_items (
@@ -452,6 +460,31 @@ class Database:
             referrer_id
         )
         return row["cnt"]
+
+    async def get_ref_reward_status(self, user_id: int) -> dict:
+        """Get whether user has already claimed their referral milestone rewards."""
+        row = await self.pool.fetchrow(
+            "SELECT ref_reward_week_claimed, ref_reward_month_claimed FROM users WHERE user_id = $1",
+            user_id
+        )
+        if not row:
+            return {"week_claimed": False, "month_claimed": False}
+        return {
+            "week_claimed": bool(row["ref_reward_week_claimed"]),
+            "month_claimed": bool(row["ref_reward_month_claimed"]),
+        }
+
+    async def claim_ref_reward(self, user_id: int, reward_type: str) -> bool:
+        """
+        Claim a referral milestone reward ('week' or 'month').
+        Returns True if successfully claimed (first time), False if already claimed.
+        """
+        col = "ref_reward_week_claimed" if reward_type == "week" else "ref_reward_month_claimed"
+        result = await self.pool.execute(
+            f"UPDATE users SET {col} = TRUE WHERE user_id = $1 AND {col} = FALSE",
+            user_id
+        )
+        return result == "UPDATE 1"
 
     # ─────────────────────── Seen Items (dedup) ───────────────────────────────
 
