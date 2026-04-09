@@ -280,7 +280,7 @@ class DiscountParser:
                         "shop": "Sulpak", "category": "tech",
                     })
             except: break
-        for cat in ["smartfoniy", "noutbuki", "televizoriy", "holodilnikiy", "stiralniye_mashiniy", "planshetiy"]:
+        for cat in ["smartfoniy", "noutbuki", "led_oled_televizoriy", "holodilniki", "stiralniye_mashiniy", "planshetiy"]:
             result.extend(await self.fetch_category_sulpak(session, cat, seen_ids))
         return result
 
@@ -393,11 +393,13 @@ class DiscountParser:
             "akyldy-dinamikter", "velosipedy", "otdih-i-sport",
             "jekshn-kamery-accessory", "igrushki", "shini"
         ]
-        for cat in categories:
-            for page in range(1, 3):
-                url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
-                r = await safe_request(session, "GET", url, headers=self.base_headers)
-                if not r: break
+        # Для Alser используем новую сессию без impersonate, так как Cloudflare на сервере блокирует chrome124
+        async with AsyncSession(impersonate=None) as alser_session:
+            for cat in categories:
+                for page in range(1, 3):
+                    url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
+                    r = await safe_request(alser_session, "GET", url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+                    if not r: break
                 
                 # Принудительно декодируем в utf-8, так как curl_cffi может ошибиться
                 try:
