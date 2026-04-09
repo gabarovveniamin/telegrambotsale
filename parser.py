@@ -19,7 +19,7 @@ CITY_SLUG_MECHTA  = "almaty"
 CITY_ID_KASPI     = "750000000"                   # Алматы
 
 # ─── Настройки ────────────────────────────────────────────────────────────────
-MAX_PAGES      = 5
+MAX_PAGES      = 10  # Technodom: 10 страниц по каждому ключевому слову
 PAGE_SIZE      = 30
 RETRY_COUNT    = 3
 RETRY_DELAY    = 2.0
@@ -223,7 +223,7 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_category_sulpak(self, session: AsyncSession, category: str, seen_ids: set) -> List[Dict[str, Any]]:
         result = []
-        for page in range(1, 4):
+        for page in range(1, 11):  # 10 страниц на категорию (~250 товаров)
             url = f"https://www.sulpak.kz/f/{category}/" if page == 1 else f"https://www.sulpak.kz/f/{category}/?page={page}"
             r = await safe_request(session, "GET", url, headers=self.base_headers)
             if r is None: break
@@ -254,7 +254,7 @@ class DiscountParser:
     async def fetch_sulpak(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         seen_ids = set()
-        for page in range(1, 4):
+        for page in range(1, 11):  # 10 страниц раздела "Акции"
             url = f"https://www.sulpak.kz/SaleLoadProducts/{page}/~/~/0-2147483647/~/~/popularitydesc/tiles"
             r = await safe_request(session, "POST", url, headers={"X-Requested-With": "XMLHttpRequest"})
             if r is None: break
@@ -292,7 +292,7 @@ class DiscountParser:
         seen_ids = set()
         categories = ["smartfony", "noutbuki", "televizory"]
         for cat in categories:
-            for page in range(1, 3):
+            for page in range(1, 9):  # 8 страниц на категорию
                 url = f"https://www.mechta.kz/category/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
                 r = await safe_request(session, "GET", url, headers=self.base_headers)
                 if not r: break
@@ -551,7 +551,7 @@ class DiscountParser:
             "Referer": "https://www.meloman.kz/",
         }
         for cat in cats:
-            max_pages = 10 if "q=" in cat else 3
+            max_pages = 10 if "q=" in cat else 8  # увеличили с 3 до 8 страниц
             for pg in range(1, max_pages + 1):
                 sep = "&" if "?" in cat else "?"
                 url = f"https://www.meloman.kz/{cat}" + (f"{sep}p={pg}" if pg > 1 or sep == "&" else "")
@@ -646,7 +646,7 @@ class DiscountParser:
         res = []
         seen = set()
         for slug, label in cats.items():
-            for pg in range(1, 3):
+            for pg in range(1, 7):  # 6 страниц на категорию (~288 товаров)
                 start = (pg - 1) * 48
                 url = f"https://adidas.kz/{slug}/" + (f"?start={start}" if pg > 1 else "")
                 r = await safe_request(session, "GET", url, headers=self.base_headers)
@@ -775,6 +775,7 @@ class DiscountParser:
                         seen.add(item["id"])
                         all_items.append(item)
         all_items.sort(key=lambda x: x.get("discount", 0), reverse=True)
+        logger.info(f"=== ИТОГО: бот видит {len(all_items)} активных акций со всех работающих магазинов ===")
         return all_items
 
     async def get_single_product_price(self, url: str, shop: str) -> Optional[int]:
