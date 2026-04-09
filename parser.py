@@ -218,17 +218,31 @@ class DiscountParser:
             "https://www.technodom.kz/catalog/detskie-tovary/gigiena-i-uhod-za-rebenkom",
         ]
         
-        all_products = []
         seen = set()
+        # Ограничиваем количество одновременных запросов до 5, чтобы не забанили
+        semaphore = asyncio.Semaphore(5)
+
+        async def fetch_with_sem(url):
+            async with semaphore:
+                try:
+                    res = await self.fetch_technodom_category(session, url, seen)
+                    if res:
+                        logger.info(f"[Technodom] {url} -> найдено {len(res)} скидок")
+                    return res
+                except Exception as e:
+                    logger.error(f"[Technodom] Ошибка {url}: {e}")
+                    return []
+
+        tasks = [fetch_with_sem(url) for url in urls]
+        # Запускаем все задачи параллельно
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Ограничиваем количество категорий за один проход, чтобы не попадать в долгий цикл
-        # Либо просто проходим все по очереди
-        for url in urls:
-            products = await self.fetch_technodom_category(session, url, seen)
-            all_products.extend(products)
-            # Небольшая пауза между категориями
-            await asyncio.sleep(0.5)
-            
+        all_products = []
+        for res in results:
+            if isinstance(res, list):
+                all_products.extend(res)
+        
+        logger.info(f"[Technodom] Всего собрано: {len(all_products)} товаров со скидками")
         return all_products
 
     # ─────────────────────────────────────────────────────────────────────────
