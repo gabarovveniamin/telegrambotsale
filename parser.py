@@ -145,8 +145,11 @@ class DiscountParser:
                     break
                 found_discount = False
                 for p in products:
-                    discount = p.get("discount", 0)
-                    if not discount or discount <= 0:
+                    try:
+                        discount = int(p.get("discount") or 0)
+                    except (ValueError, TypeError):
+                        discount = 0
+                    if discount <= 0:
                         continue  # Если сортируем по скидке - как только скидок нет, можно остановиться
                     found_discount = True
                     sku = str(p.get("sku") or "").strip()
