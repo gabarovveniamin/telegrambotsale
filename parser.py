@@ -108,14 +108,25 @@ class DiscountParser:
     async def fetch_technodom_category(self, session: AsyncSession, url: str, seen: set) -> List[Dict[str, Any]]:
         """Парсит одну категорию Technodom через __NEXT_DATA__"""
         results = []
-        # Мы запрашиваем страницу целиком, так как данные зашиты в HTML
+        # Устанавливаем куку города, чтобы избежать редиректов на выбор города
+        # и подгружать товары для нужного региона
+        session.cookies.set("city_id", CITY_ID_TECHNODOM, domain=".technodom.kz")
+        session.cookies.set("cityId", CITY_ID_TECHNODOM, domain=".technodom.kz")
+        
         r = await safe_request(session, "GET", url, headers=self.base_headers)
-        if not r: return []
+        if not r: 
+            logger.error(f"[Technodom] Не удалось получить ответ для {url}")
+            return []
+            
+        if r.status_code != 200:
+            logger.error(f"[Technodom] Ошибка {r.status_code} для {url}")
+            return []
         
         try:
             soup = BeautifulSoup(r.text, "html.parser")
             script = soup.find("script", id="__NEXT_DATA__")
             if not script:
+                logger.warning(f"[Technodom] На странице {url} не найден __NEXT_DATA__. Ответ сервера: {r.text[:200]}...")
                 return []
             
             data = json.loads(script.string)
@@ -123,6 +134,11 @@ class DiscountParser:
             pl = data.get("props", {}).get("pageProps", {}).get("initialState", {}).get("productList", {})
             items = pl.get("items", [])
             
+            if not items:
+                # Иногда товары лежат в других ключах initialState
+                logger.debug(f"[Technodom] В категории {url} не найдено товаров в productList.items")
+                return []
+
             for p in items:
                 sku = str(p.get("sku") or p.get("id") or "").strip()
                 if not sku or sku in seen:
