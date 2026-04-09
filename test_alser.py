@@ -1,8 +1,8 @@
 import asyncio
-import json
 from curl_cffi.requests import AsyncSession
 
 CITY_ID = "5f5f1e3b4c8a49e692fefd70"
+BASE = "https://api.technodom.kz"
 
 API_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -17,36 +17,55 @@ API_HEADERS = {
 async def post_check(session, name, url, payload):
     try:
         r = await session.post(url, headers=API_HEADERS, json=payload, timeout=15)
-        print(f"\n[{name}] POST {url}")
-        print(f"  Status: {r.status_code}")
+        print(f"\n[{name}]  Status: {r.status_code}")
         if r.status_code == 200:
             data = r.json()
-            items = data.get("items") or data.get("products") or data.get("data") or []
-            print(f"  Items found: {len(items)}")
-            print(f"  Keys: {list(data.keys())}")
-            if items:
-                print(f"  First item keys: {list(items[0].keys())}")
+            products = data.get("products") or []
+            total = data.get("total", 0)
+            print(f"  total={total}, products={len(products)}")
+            if products:
+                p = products[0]
+                print(f"  First: {p.get('name') or p.get('title')} | price={p.get('price')} oldPrice={p.get('old_price') or p.get('oldPrice')}")
         else:
-            print(f"  Error: {r.text[:300]}")
+            print(f"  Error: {r.text[:200]}")
+    except Exception as e:
+        print(f"  Exception: {e}")
+
+async def get_check(session, name, url):
+    try:
+        r = await session.get(url, headers=API_HEADERS, timeout=15)
+        print(f"\n[{name}]  Status: {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            products = data.get("products") or data.get("items") or []
+            print(f"  Keys: {list(data.keys())}")
+            print(f"  Products: {len(products)}")
+        else:
+            print(f"  Error: {r.text[:200]}")
     except Exception as e:
         print(f"  Exception: {e}")
 
 async def main():
     async with AsyncSession(impersonate="chrome124") as session:
-        # Вариант 1 — с categoryId
-        await post_check(session, "Search v2 (categoryId)", 
-            "https://api.technodom.kz/katalog/api/v2/products/search",
-            {"categoryId": "smartfony-i-telefony", "city_id": CITY_ID, "limit": 24, "offset": 0, "sorting": "score", "type": "category"}
+        # Keyword search (старый подход)
+        await post_check(session, "Keyword: смартфон",
+            f"{BASE}/katalog/api/v2/products/search",
+            {"categories": [""], "city_id": CITY_ID, "query": "смартфон", "limit": 10, "page": 1, "sort_by": "popular", "type": "full_search"}
         )
-        # Вариант 2 — с categories как массив
-        await post_check(session, "Search v2 (categories array)",
-            "https://api.technodom.kz/katalog/api/v2/products/search",
-            {"categories": ["smartfony-i-telefony"], "city_id": CITY_ID, "limit": 24, "page": 1, "sort_by": "score", "type": "category"}
+        # Keyword search с фильтром скидок
+        await post_check(session, "Keyword: смартфон + discount",
+            f"{BASE}/katalog/api/v2/products/search",
+            {"categories": [""], "city_id": CITY_ID, "query": "смартфон", "limit": 10, "page": 1, "sort_by": "popular", "type": "full_search", "filter": "discount"}
         )
-        # Вариант 3 — с query пустой и categoryId
-        await post_check(session, "Search v2 (empty query + categoryId)",
-            "https://api.technodom.kz/katalog/api/v2/products/search",
-            {"categories": ["smartfony-i-gadzhety/smartfony-i-telefony"], "city_id": CITY_ID, "limit": 24, "page": 1, "sort_by": "score", "type": "full_search", "query": ""}
+        # Попытка найти category endpoint
+        await get_check(session, "Category GET v1",
+            f"{BASE}/katalog/api/v1/catalog/smartfony-i-telefony?cityId={CITY_ID}&limit=10"
+        )
+        await get_check(session, "Category GET v2",
+            f"{BASE}/katalog/api/v2/catalog?categoryId=smartfony-i-telefony&cityId={CITY_ID}&limit=10"
+        )
+        await get_check(session, "Products by category GET",
+            f"{BASE}/katalog/api/v2/products?categorySlug=smartfony-i-telefony&cityId={CITY_ID}&limit=10"
         )
 
 asyncio.run(main())
