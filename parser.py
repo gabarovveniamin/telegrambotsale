@@ -393,19 +393,26 @@ class DiscountParser:
             "akyldy-dinamikter", "velosipedy", "otdih-i-sport",
             "jekshn-kamery-accessory", "igrushki", "shini"
         ]
-        # Для Alser используем новую сессию без impersonate, так как Cloudflare на сервере блокирует chrome124
-        async with AsyncSession(impersonate=None) as alser_session:
+        import aiohttp
+        # Для Alser используем aiohttp(так как Cloudflare блокирует TLS от curl_cffi на сервере)
+        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}) as alser_session:
             for cat in categories:
                 for page in range(1, 3):
                     url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
-                    r = await safe_request(alser_session, "GET", url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-                    if not r: break
-                
-                # Принудительно декодируем в utf-8, так как curl_cffi может ошибиться
-                try:
-                    content_text = r.content.decode('utf-8')
-                except:
-                    content_text = r.text
+                    r_text = None
+                    try:
+                        async with alser_session.get(url, timeout=20) as r:
+                            if r.status != 200:
+                                logger.warning(f"[Alser] {url} -> HTTP {r.status}")
+                                break
+                            r_text = await r.text()
+                    except Exception as e:
+                        logger.warning(f"[Alser] Exception on {url}: {e}")
+                        break
+                    
+                    if not r_text: break
+                # Принудительно декодируем
+                content_text = r_text
 
                 # Парсим аргументы функции (имена и значения)
                 try:
