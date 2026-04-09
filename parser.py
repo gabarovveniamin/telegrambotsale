@@ -105,61 +105,131 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     #  TECHNODOM
     # ─────────────────────────────────────────────────────────────────────────
-    async def fetch_technodom(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        url = "https://api.technodom.kz/katalog/api/v2/products/search"
-        headers = {
-            **self.base_headers,
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "affiliation": "web",
-            "content-language": "ru-RU",
-            "Origin": "https://www.technodom.kz",
-            "Referer": "https://www.technodom.kz/",
-        }
-        result: List[Dict[str, Any]] = []
-        queries = ["смартфон", "ноутбук", "телевизор", "iphone", "samsung", "наушники"]
-        seen: set = set()
+    async def fetch_technodom_category(self, session: AsyncSession, url: str, seen: set) -> List[Dict[str, Any]]:
+        """Парсит одну категорию Technodom через __NEXT_DATA__"""
+        results = []
+        # Мы запрашиваем страницу целиком, так как данные зашиты в HTML
+        r = await safe_request(session, "GET", url, headers=self.base_headers)
+        if not r: return []
+        
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+            script = soup.find("script", id="__NEXT_DATA__")
+            if not script:
+                return []
+            
+            data = json.loads(script.string)
+            # Путь к продуктам: props -> pageProps -> initialState -> productList -> items
+            pl = data.get("props", {}).get("pageProps", {}).get("initialState", {}).get("productList", {})
+            items = pl.get("items", [])
+            
+            for p in items:
+                sku = str(p.get("sku") or p.get("id") or "").strip()
+                if not sku or sku in seen:
+                    continue
+                seen.add(sku)
+                
+                title = (p.get("title") or p.get("name") or "").strip()
+                # Ссылка обычно в uri или urlHandle
+                slug = (p.get("urlHandle") or p.get("uri") or "").strip()
+                
+                price = p.get("price")
+                old_price = p.get("oldPrice")
+                
+                # Ищем скидку
+                if title and slug and price and old_price and old_price > price:
+                    results.append({
+                        "id": f"td_{sku}",
+                        "title": title,
+                        "old_price": fmt_price(old_price),
+                        "new_price": fmt_price(price),
+                        "discount": calc_discount(old_price, price),
+                        "link": f"https://www.technodom.kz/p/{slug}",
+                        "shop": "Technodom",
+                        "category": "tech",
+                    })
+        except Exception as e:
+            logger.error(f"Ошибка при парсинге категории Technodom {url}: {e}")
+            
+        return results
 
-        for q in queries:
-            for page in range(1, 3):
-                payload = {
-                    "categories": [""],
-                    "city_id": CITY_ID_TECHNODOM,
-                    "query": q,
-                    "limit": PAGE_SIZE,
-                    "page": page,
-                    "sort_by": "popular",
-                    "type": "full_search",
-                }
-                r = await safe_request(session, "POST", url, headers=headers, json_data=payload)
-                if r is None: break
-                try:
-                    data = r.json()
-                    products = data.get("products") or data.get("items") or []
-                    if not products: break
-                    for p in products:
-                        pid = str(p.get("id") or p.get("sku") or "").strip()
-                        if not pid or pid in seen: continue
-                        seen.add(pid)
-                        title = (p.get("name") or "").strip()
-                        slug = (p.get("slug") or "").strip()
-                        old_p = p.get("old_price")
-                        new_p = p.get("price")
-                        if not (title and slug and old_p and new_p and old_p > new_p): continue
-                        result.append({
-                            "id": f"td_{pid}",
-                            "title": title,
-                            "old_price": fmt_price(old_p),
-                            "new_price": fmt_price(new_p),
-                            "discount": calc_discount(old_p, new_p),
-                            "link": f"https://www.technodom.kz/p/{slug}",
-                            "shop": "Technodom",
-                            "category": "tech",
-                        })
-                    if len(products) < PAGE_SIZE: break
-                except: break
-                await asyncio.sleep(0.3)
-        return result
+    async def fetch_technodom(self, session: AsyncSession) -> List[Dict[str, Any]]:
+        """Основной метод сбора всех категорий Technodom"""
+        urls = [
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/smartfony-i-telefony",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/gadzhety",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/naushniki",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/planshety-i-jelektronnye-knigi",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/aksessuary-dlja-telefonov",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/umnyj-dom",
+            "https://www.technodom.kz/catalog/smartfony-i-gadzhety/po-dlja-smartfonov-i-gadzhetov",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/noutbuki-i-aksessuary",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/komplektujuschie",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/setevoe-oborudovanie",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/komp-jutery-i-monitory",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/hranenie-dannyh",
+            "https://www.technodom.kz/catalog/noutbuki-i-komp-jutery/po-dlja-noutbukov-i-pk",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/televizory",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/proektory-i-aksessuary",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/aksessuary-dlja-tv",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/domashnie-kinoteatry-i-kolonki",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/hi-fi-i-hi-res-audio",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/fotoapparaty-i-aksessuary",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/video-i-ekshn-kamery",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/opticheskie-pribory",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/portativnaja-akustika",
+            "https://www.technodom.kz/catalog/tv-audio-foto-video/muzykal-nye-instrumenty",
+            "https://www.technodom.kz/catalog/tehnika-dlja-kuhni/krupnaja-bytovaja-tehnika",
+            "https://www.technodom.kz/catalog/tehnika-dlja-kuhni/prigotovlenie-pischy",
+            "https://www.technodom.kz/catalog/tehnika-dlja-kuhni/kofemashiny-i-chajniki",
+            "https://www.technodom.kz/catalog/tehnika-dlja-kuhni/podgotovka-produktov",
+            "https://www.technodom.kz/catalog/tehnika-dlja-kuhni/aksessuary-i-sredstva-po-uhodu",
+            "https://www.technodom.kz/catalog/tehnika-dlja-doma/tehnika-dlja-uborki",
+            "https://www.technodom.kz/catalog/tehnika-dlja-doma/uhod-za-odezhdoj",
+            "https://www.technodom.kz/catalog/tehnika-dlja-doma/klimaticheskaja-tehnika",
+            "https://www.technodom.kz/catalog/tehnika-dlja-doma/aksessuary-dlja-domashnej-tehniki",
+            "https://www.technodom.kz/catalog/krasota-i-zdorov-e/uhod-za-volosami",
+            "https://www.technodom.kz/catalog/krasota-i-zdorov-e/tovary-dlja-zhivgo-brittja",
+            "https://www.technodom.kz/catalog/krasota-i-zdorov-e/krasota-i-uhod",
+            "https://www.technodom.kz/catalog/krasota-i-zdorov-e/zdorov-e",
+            "https://www.technodom.kz/catalog/krasota-i-zdorov-e/aksessuary-dlja-tovarov-krasoty-i-zdorov-ja",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/igrovye-pristavki",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/igry",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/gejmerskaja-mebel-i-atributika",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/gejmerskie-aksessuary",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/podpiski-i-karty-oplaty",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/elektrotransport",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/kvadrokoptery-i-roboty",
+            "https://www.technodom.kz/catalog/igry-i-razvlechenija/astronomija",
+            "https://www.technodom.kz/catalog/mebel/ofisnaja-mebel",
+            "https://www.technodom.kz/catalog/dom-i-sad/avtotovary",
+            "https://www.technodom.kz/catalog/dom-i-sad/instrumenty-i-stroitel-stvo",
+            "https://www.technodom.kz/catalog/dom-i-sad/sadovaja-tehnika",
+            "https://www.technodom.kz/catalog/dom-i-sad/posuda",
+            "https://www.technodom.kz/catalog/dom-i-sad/tekstil-dlja-doma",
+            "https://www.technodom.kz/catalog/otdyh-sport-i-turizm/velo-i-elektrotransport",
+            "https://www.technodom.kz/catalog/otdyh-sport-i-turizm/fitnes-i-trenazhery",
+            "https://www.technodom.kz/catalog/otdyh-sport-i-turizm/sportivnye-igry-i-edinstvo",
+            "https://www.technodom.kz/catalog/otdyh-sport-i-turizm/turizm-i-aktivnyj-otdyh",
+            "https://www.technodom.kz/catalog/otdyh-sport-i-turizm/ohota-i-rybalka",
+            "https://www.technodom.kz/catalog/detskie-tovary/detskij-transport",
+            "https://www.technodom.kz/catalog/detskie-tovary/igrushki-i-razvlechenija",
+            "https://www.technodom.kz/catalog/detskie-tovary/detskoe-tvorchestvo-i-obuchenie",
+            "https://www.technodom.kz/catalog/detskie-tovary/gigiena-i-uhod-za-rebenkom",
+        ]
+        
+        all_products = []
+        seen = set()
+        
+        # Ограничиваем количество категорий за один проход, чтобы не попадать в долгий цикл
+        # Либо просто проходим все по очереди
+        for url in urls:
+            products = await self.fetch_technodom_category(session, url, seen)
+            all_products.extend(products)
+            # Небольшая пауза между категориями
+            await asyncio.sleep(0.5)
+            
+        return all_products
 
     # ─────────────────────────────────────────────────────────────────────────
     #  SULPAK
