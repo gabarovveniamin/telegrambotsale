@@ -485,7 +485,7 @@ class DiscountParser:
         try:
             root = ET.fromstring(r.content)
             res = []
-            for off in root.findall(".//offer")[:500]:
+            for off in root.findall(".//offer"):
                 p = off.find("price")
                 op = off.find("oldprice")
                 if p is not None and op is not None:
