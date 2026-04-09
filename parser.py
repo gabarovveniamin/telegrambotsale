@@ -600,12 +600,14 @@ class DiscountParser:
         heads = {**self.base_headers, "Referer": "https://fmobile.kz/", "Origin": "https://fmobile.kz"}
         res = []
         seen = set()
-        for page in range(1, 5):
+        for page in range(1, 500):  # Читаем до 500 страниц (до 25 000 товаров)
             params = {"channel": "ONLINE", "city_slug": CITY_SLUG_MECHTA, "page": page, "size": 50}
             r = await safe_request(session, "GET", url, headers=heads, params=params)
             if not r: break
             try:
                 items = r.json().get("result", {}).get("items") or []
+                if not items:
+                    break  # Если товары закончились, прерываем цикл
                 for i in items:
                     sku, title, np, op = i.get("sku"), i.get("model_stock_name"), i.get("price"), i.get("old_price")
                     if sku and title and np and op and op > np:
@@ -618,6 +620,7 @@ class DiscountParser:
                             "shop": "Freedom Mobile 🟢", "category": "tech",
                         })
             except: break
+            await asyncio.sleep(0.2)  # Небольшая задержка, чтобы не заблокировали IP
         return res
 
     # ─────────────────────────────────────────────────────────────────────────
