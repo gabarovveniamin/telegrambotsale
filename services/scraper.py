@@ -98,7 +98,7 @@ class ScraperService:
 
     async def _deep_scroll_and_capture(self, page, captured_data, category_label):
         """Вспомогательный метод для прокрутки и сбора данных с одной страницы"""
-        for _ in range(8):  # Увеличили глубину скролла
+        for _ in range(8):  # Глубина скролла
             await page.evaluate("window.scrollBy(0, 1200)")
             await asyncio.sleep(1.5)
             
@@ -121,7 +121,6 @@ class ScraperService:
             
             for data in products:
                 if data['href']:
-                    # Извлекаем ID (последний кусок URL перед слэшем)
                     parts = data['href'].split('/')
                     p_id = parts[-2] if parts[-1] == "" else parts[-1] 
                     full_id = f"kp_all_{p_id}"
@@ -138,5 +137,25 @@ class ScraperService:
                                 "shop": "Kaspi", 
                                 "category": category_label
                             }
+
+    def _extract_price(self, text: str) -> Optional[int]:
+        if not text: return None
+        text = text.split('x')[0].split('х')[0].split('мес')[0]
+        digits = re.sub(r"[^\d]", "", text)
+        return int(digits) if digits else None
+
+    async def fetch_price(self, url: str) -> Optional[int]:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
+            page = await context.new_page()
+            await Stealth().apply_stealth_async(page)
+            try:
+                await page.goto(url, wait_until="load", timeout=30000)
+                await asyncio.sleep(2)
+                el = await page.query_selector(".item-card__prices-price, [class*='price-once'], [class*='prices-price']")
+                return self._extract_price(await el.inner_text()) if el else None
+            except: return None
+            finally: await browser.close()
 
 scraper_service = ScraperService()
