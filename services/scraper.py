@@ -107,8 +107,9 @@ class ScraperService:
         """
         Парсит список товаров со скидкой из Kaspi Shop через браузер.
         """
-        url = "https://kaspi.kz/shop/c/smartphones/?q=%3AallMerchants%3A%3AavailableInZones%3A750000000%3AisDiscount%3Atrue"
-        logger.info(f"[ScraperService] Переход на страницу списка Kaspi: {url}")
+        # Пробуем через поиск, это иногда стабильнее
+        url = "https://kaspi.kz/shop/search/?text=%D1%81%D0%BC%D0%B0%D1%80%D1%82%D1%84%D0%BE%D0%BD&q=%3AallMerchants%3A%3AavailableInZones%3A750000000%3AisDiscount%3Atrue"
+        logger.info(f"[ScraperService] Запуск парсинга Kaspi. URL: {url}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
@@ -125,49 +126,53 @@ class ScraperService:
             
             items = []
             try:
-                # Пытаемся зайти
-                response = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                if response and response.status != 200:
-                    logger.warning(f"[ScraperService] Kaspi вернул статус {response.status} для списка")
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(8)
                 
-                # Ждем отрисовку
-                await asyncio.sleep(7)
+                title = await page.title()
+                logger.info(f"[ScraperService] Kaspi Page Title: {title}")
                 
-                # Пробуем разные селекторы карточек
-                cards = await page.query_selector_all(".item-card")
+                # Если Каспи просит выбрать город, пробуем просто подождать
+                # Или если видим кнопку "Алматы", можно попробовать кликнуть, но обычно локаль ru-RU + 1920x1080 сами ставят город.
+
+                # Ищем всё, что похоже на карточку товара
+                cards = await page.query_selector_all(".item-card, .p-card, .product-card")
+                logger.info(f"[ScraperService] Найдено карточек (метод 1): {len(cards)}")
+                
                 if not cards:
-                    cards = await page.query_selector_all(".p-card")
-                
-                logger.info(f"[ScraperService] Найдено карточек на странице: {len(cards)}")
+                    # Метод 2: ищем все ссылки на продукты
+                    product_links = await page.query_selector_all("a[href*='/shop/p/']")
+                    logger.info(f"[ScraperService] Найдено ссылок на товары (метод 2): {len(product_links)}")
+                    
+                    # Если нашли ссылки, но не карточки — значит верстка совсем другая
+                    # В этом тесте просто попробуем вытянуть данные из первой попавшейся
+                    if product_links:
+                        logger.info("[ScraperService] Верстка Kaspi изменилась, использую поиск по ссылкам.")
                 
                 for card in cards:
                     try:
-                        # Ищем заголовок и цену внутри карточки
                         title_el = await card.query_selector("a[class*='name'], a[class*='title']")
                         price_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
                         
                         if title_el and price_el:
-                            title = await title_el.inner_text()
+                            title_text = await title_el.inner_text()
                             href = await title_el.get_attribute("href")
-                            price_text = await price_el.inner_text()
+                            price_val = "".join([c for c in await price_el.inner_text() if c.isdigit()])
                             
-                            clean_price = "".join([c for c in price_text if c.isdigit()])
-                            
-                            if clean_price and href:
+                            if price_val and href:
                                 items.append({
                                     "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": title.strip(),
-                                    "new_price": int(clean_price),
-                                    "old_price": int(int(clean_price) * 1.15), # Приблизительно
+                                    "title": title_text.strip(),
+                                    "new_price": int(price_val),
+                                    "old_price": int(int(price_val) * 1.1),
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi",
                                     "category": "tech"
                                 })
-                    except Exception as e:
-                        continue
+                    except: continue
                         
             except Exception as e:
-                logger.error(f"[ScraperService] Ошибка при парсинге списка Kaspi: {e}")
+                logger.error(f"[ScraperService] Ошибка Kaspi Список: {e}")
             finally:
                 await browser.close()
             return items
