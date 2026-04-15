@@ -12,21 +12,17 @@ class ScraperService:
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
     async def fetch_price(self, url: str) -> Optional[int]:
-        """Универсальное получение цены (для точечной следилки)."""
+        """Универсальное получение цены."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
             try:
-                await page.goto(url, wait_until="networkidle", timeout=30000)
+                await page.goto(url, wait_until="load", timeout=30000)
                 await asyncio.sleep(2)
-                for s in [".prices-price", ".price", ".current-price", "span[class*='price']"]:
-                    el = await page.query_selector(s)
-                    if el:
-                        val = self._extract_price(await el.inner_text())
-                        if val: return val
-                return None
+                el = await page.query_selector("[class*='price-once'], [class*='prices-price'], .price")
+                return self._extract_price(await el.inner_text()) if el else None
             except: return None
             finally: await browser.close()
 
@@ -36,13 +32,12 @@ class ScraperService:
         return int(digits) if digits else None
 
     async def fetch_kaspi_discounts(self) -> list:
-        """Мега-парсер: ищет всё, что выглядит как скидка на смартфонах."""
+        """Диагностический парсер Kaspi."""
         url = "https://kaspi.kz/shop/c/smartphones/?q=%3AavailableInZones%3A750000000"
-        logger.info(f"[ScraperService] Глубокий поиск скидок Kaspi: {url}")
+        logger.info(f"[ScraperService] Глубокий анализ верстки Kaspi: {url}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-            # Используем 1280x800 — этот режим ранее выдал нам 242 карточки
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
@@ -50,59 +45,66 @@ class ScraperService:
             items = []
             try:
                 await page.goto(url, wait_until="load", timeout=60000)
+                await page.evaluate("window.scrollTo(0, 800)")
+                await asyncio.sleep(5)
                 
-                # Делаем активный скроллинг
-                for i in range(4):
-                    await page.evaluate(f"window.scrollTo(0, {800 * (i+1)})")
-                    await asyncio.sleep(2)
-                
-                # Ждем прогрузку
-                await asyncio.sleep(4)
-                
-                # Ищем ВСЕ элементы, которые могут быть карточками
                 cards = await page.query_selector_all("[class*='card'], .item-card, .p-card")
-                logger.info(f"[ScraperService] Найдено потенциальных карточек: {len(cards)}")
+                logger.info(f"[ScraperService] Вижу карточек: {len(cards)}")
                 
+                if cards:
+                    # ДИАГНОСТИКА: берем первую карточку и смотрим её ТЕКСТ
+                    sample_text = await cards[0].inner_text()
+                    logger.info(f"[ScraperService] ТЕКСТ КАРТОЧКИ ДЛЯ АНАЛИЗА: {sample_text.replace('\n', ' | ')}")
+
                 for card in cards:
                     try:
-                        # Внутри карточки ищем заголовок, новую цену и старую (зачеркнутую)
-                        title_el = await card.query_selector("a[class*='name'], a[class*='title'], .item-card__name-link")
-                        price_new_el = await card.query_selector("[class*='prices-price'], [class*='price-once']")
-                        # Старая цена (у Каспи она обычно зачеркнута)
-                        price_old_el = await card.query_selector("[class*='old'], [class*='base'], [style*='text-decoration: line-through']")
+                        title_el = await card.query_selector("a[class*='name'], a[class*='title']")
+                        price_new_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
+                        # Пробуем все варианты старой цены
+                        price_old_el = await card.query_selector("[class*='old'], [class*='base'], [class*='crossed']")
                         
-                        if title_el and price_new_el and price_old_el:
+                        if title_el and price_new_el:
                             title = (await title_el.inner_text()).strip()
                             href = await title_el.get_attribute("href")
-                            new_val = self._extract_price(await price_new_el.inner_text())
-                            old_val = self._extract_price(await price_old_el.inner_text())
+                            new_v = self._extract_price(await price_new_el.inner_text())
                             
-                            if new_val and old_val and old_val > new_val:
-                                # Проверяем на дубликаты по ID (последняя часть ссылки)
-                                product_id = href.split('/')[-2] if '/' in href else href
+                            # Если нашли старую цену ЧЕРЕЗ СЕЛЕКТОР или ОНА ЕСТЬ В ТЕКСТЕ (если там 2 числа)
+                            old_v = None
+                            if price_old_el:
+                                old_v = self._extract_price(await price_old_el.inner_text())
+                            
+                            # Если старую цену не нашли селектором, попробуем вытащить её из текста (обычно старая больше новой)
+                            if not old_v:
+                                card_text = await card.inner_text()
+                                prices = [self._extract_price(p) for p in re.findall(r"[\d\s]{5,}₸", card_text)]
+                                prices = [p for p in prices if p and p > 1000]
+                                if len(prices) >= 2:
+                                    old_v = max(prices)
+                                    new_v = min(prices)
+
+                            if new_v and old_v and old_v > new_v:
                                 items.append({
-                                    "id": f"kp_br_{product_id}",
+                                    "id": f"kp_br_{href.split('/')[-2]}",
                                     "title": title,
-                                    "new_price": new_val,
-                                    "old_price": old_val,
+                                    "new_price": new_v,
+                                    "old_price": old_v,
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi", "category": "tech"
                                 })
                     except: continue
                 
-                # Удаляем дубликаты (если один товар попал в 2 селектора)
+                # Уникализация
                 seen = set()
-                unique_items = []
-                for item in items:
-                    if item["id"] not in seen:
-                        seen.add(item["id"])
-                        unique_items.append(item)
+                res = []
+                for i in items:
+                    if i["id"] not in seen:
+                        seen.add(i["id"]); res.append(i)
                 
-                logger.info(f"[ScraperService] Итого уникальных скидок найдено: {len(unique_items)}")
-                return unique_items
+                logger.info(f"[ScraperService] Найдено скидок после анализа текста: {len(res)}")
+                return res
                         
             except Exception as e:
-                logger.error(f"[ScraperService] Ошибка Kaspi: {e}")
+                logger.error(f"[ScraperService] Ошибка: {e}")
             finally:
                 await browser.close()
             return []
