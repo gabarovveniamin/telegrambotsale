@@ -5,6 +5,7 @@ from database import db
 from bot import broadcast_message
 from config import config
 from datetime import datetime, timezone
+from services.scraper import scraper_service
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ async def run_personal_tracker_cycle():
     tracked_items = await db.get_all_tracked_items()
     
     for item in tracked_items:
-        current_price = await parser.get_single_product_price(item['url'], item['shop'])
+        current_price = await scraper_service.fetch_price(item['url'])
         if current_price is None: continue
             
         if current_price < item['last_price']:

@@ -9,6 +9,7 @@ import time
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
+from services.scraper import scraper_service
 
 logger = logging.getLogger(__name__)
 
@@ -325,34 +326,28 @@ class DiscountParser:
     #  KASPI
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-        headers = {
-            **self.base_headers,
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://kaspi.kz/",
-            "Origin": "https://kaspi.kz",
-            "X-KS-City": CITY_ID_KASPI,
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        for page in range(0, 3):
-            params = {":availableInZones": CITY_ID_KASPI, "page": page, "pageSize": 48}
-            r = await safe_request(session, "GET", "https://kaspi.kz/yml/product-view/pl/filters", headers=headers, params=params)
-            if not r: break
-            try:
-                cards = r.json().get("data", {}).get("cards") or []
-                for o in cards:
-                    pid = str(o.get("id", ""))
-                    title = o.get("title", "")
-                    old_p = o.get("unitPrice")
-                    new_p = o.get("unitSalePrice")
-                    if pid and title and old_p and new_p and old_p > new_p:
-                        result.append({
-                            "id": f"kp_{pid}", "title": title, "old_price": fmt_price(old_p),
-                            "new_price": fmt_price(new_p), "discount": calc_discount(old_p, new_p),
-                            "link": f"https://kaspi.kz/shop/p/{pid}/", "shop": "Kaspi", "category": "tech",
-                        })
-            except: break
-        return result
+        """
+        Парсит скидки Kaspi через Playwright (браузерный метод).
+        """
+        logger.info("[Kaspi] Запуск браузерного парсинга через ScraperService...")
+        raw_items = await scraper_service.fetch_kaspi_discounts()
+        
+        results = []
+        for item in raw_items:
+            # Превращаем в формат, который ожидает остальная часть бота
+            results.append({
+                "id": item["id"],
+                "title": item["title"],
+                "old_price": fmt_price(int(item["old_price"])),
+                "new_price": fmt_price(int(item["new_price"])),
+                "discount": calc_discount(item["old_price"], item["new_price"]),
+                "link": item["link"],
+                "shop": item["shop"],
+                "category": item["category"]
+            })
+            
+        logger.info(f"[Kaspi] Браузерный метод собрал {len(results)} товаров")
+        return results
 
     # ─────────────────────────────────────────────────────────────────────────
     #  ALSER
@@ -821,14 +816,11 @@ class DiscountParser:
                 for batch_start in range(0, len(product_ids), 18):
                     batch = product_ids[batch_start:batch_start + 18]
                     
-                    containers = [
-                        {"id": f"as-batch-{i}", "data": {"id": pid}}
-                        for i, pid in enumerate(batch)
-                    ]
-                    
+                    # Попробуем другой формат payload
+                    # Вариант 1: Просто массив ID товаров
                     payload = {
                         "type": "product-buy",
-                        "containers": containers
+                        "ids": batch  # Может быть API ожидает просто массив ID?
                     }
 
                     # Headers специально для AJAX POST запроса к /ajax-state/

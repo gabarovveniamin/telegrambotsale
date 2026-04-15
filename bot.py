@@ -762,7 +762,7 @@ async def cmd_sale(message: types.Message):
     await message.answer("✅ <b>Вывод завершён!</b>", parse_mode="HTML")
 
 
-@router.message(Command("salekaspi"))
+@router.message(Command("salekaspi", "kaspisale"))
 async def cmd_salekaspi(message: types.Message):
     """Команда для вывода акций Каспи."""
     from parser import parser
