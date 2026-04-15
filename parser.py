@@ -766,12 +766,13 @@ class DiscountParser:
 
     async def fetch_dns(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
-        Парсит скидочные товары с dns-shop.kz.
-
+        Парсит скидочные товары с dns-shop.kz используя API.
+        
         Алгоритм:
-        1. Динамически находит реальные ID категорий с /catalog/
-        2. Для каждой категории открывает страницу и парсит HTML карточки
-        3. Сортировка order=6 — по размеру скидки (убывание)
+        1. Получает ID товаров со страницы категории (из data-entity атрибутов)
+        2. Отправляет POST запрос на /ajax-state/product-buy/ с ID товаров
+        3. Получает JSON с ценами для каждого товара
+        4. Фильтрует товары со скидками (old_price > current_price)
         """
         result = []
         seen = set()
@@ -781,54 +782,168 @@ class DiscountParser:
             logger.warning("[DNS] Список категорий пустой, пропускаем DNS")
             return result
 
-        # Особые headers для DNS (более агрессивные)
         dns_headers = {
             **self.base_headers,
             "Referer": "https://www.dns-shop.kz/",
             "Origin": "https://www.dns-shop.kz",
-            "DNT": "1",
-            "Connection": "keep-alive",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
         }
 
         for cat_id, cat_slug in categories:
             cat_url = f"https://www.dns-shop.kz/catalog/{cat_id}/{cat_slug}/"
 
-            for page in range(1, 6):  # до 5 страниц на категорию
-                params: Dict[str, Any] = {"order": 6}  # сортировка по скидке
+            for page in range(1, 4):  # до 3 страниц
+                params = {"order": 6}  # по скидке
                 if page > 1:
                     params["p"] = page
 
-                r = await safe_request(
-                    session, "GET", cat_url,
-                    headers=dns_headers,
-                    params=params,
-                )
+                # 1. Получаем страницу категории для сбора ID товаров
+                r = await safe_request(session, "GET", cat_url, headers=dns_headers, params=params)
                 if not r:
                     break
 
-                items = self._dns_parse_html(r.text, seen)
-                if not items:
-                    break  # нет товаров со скидкой — переходим к следующей категории
+                # 2. Извлекаем ID товаров из HTML
+                soup = BeautifulSoup(r.text, "html.parser")
+                product_ids = []
+                
+                for card in soup.select("[data-product]"):
+                    entity_id = card.get("data-product", "").strip()
+                    if entity_id and entity_id not in seen:
+                        product_ids.append(entity_id)
 
-                result.extend(items)
-                logger.debug(f"[DNS] {cat_slug} стр.{page} → {len(items)} товаров")
-                await asyncio.sleep(0.5)
+                if not product_ids:
+                    break
+
+                # 3. Формируем batch запросы на API (по 18 товаров за раз как в примере)
+                for batch_start in range(0, len(product_ids), 18):
+                    batch = product_ids[batch_start:batch_start + 18]
+                    
+                    # Формируем payload как в твоем примере
+                    containers = [
+                        {
+                            "id": f"as-batch-{i}",
+                            "data": {"id": pid}
+                        }
+                        for i, pid in enumerate(batch)
+                    ]
+                    
+                    payload = {
+                        "type": "product-buy",
+                        "containers": containers
+                    }
+
+                    # 4. Отправляем POST запрос
+                    api_url = "https://www.dns-shop.kz/ajax-state/product-buy/"
+                    api_r = await safe_request(
+                        session, "POST", api_url,
+                        headers=dns_headers,
+                        json_data=payload
+                    )
+                    
+                    if not api_r:
+                        continue
+
+                    # 5. Парсим ответ
+                    try:
+                        api_data = api_r.json()
+                        if api_data.get("type") == "product-buy":
+                            items = await self._parse_dns_api_response(api_data, batch, seen)
+                            result.extend(items)
+                    except Exception as e:
+                        logger.debug(f"[DNS] Ошибка парсинга API ответа: {e}")
+                    
+                    await asyncio.sleep(0.3)
+
+                logger.debug(f"[DNS] {cat_slug} стр.{page} → {len([x for x in result if x])} товаров")
 
         logger.info(f"[DNS] Собрано: {len(result)} товаров со скидками")
         return result
 
+    async def _parse_dns_api_response(self, api_data: dict, product_ids: list, seen: set) -> List[Dict[str, Any]]:
+        """Парсит ответ от /ajax-state/product-buy/ API"""
+        items = []
+        
+        try:
+            containers = api_data.get("containers", [])
+            
+            for container in containers:
+                try:
+                    container_id = container.get("id", "")
+                    html = container.get("html", "")
+                    
+                    if not html:
+                        continue
+                    
+                    # Парсим HTML с ценой из контейнера
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # Ищем цены в HTML контейнера
+                    current_price_el = soup.select_one("[class*='current'], [class*='price']:not([class*='old'])")
+                    old_price_el = soup.select_one("[class*='old'], [class*='crossed']")
+                    
+                    if not (current_price_el and old_price_el):
+                        continue
+                    
+                    current_price_text = current_price_el.get_text(strip=True)
+                    old_price_text = old_price_el.get_text(strip=True)
+                    
+                    current = self._parse_price_val(current_price_text)
+                    old = self._parse_price_val(old_price_text)
+                    
+                    if not (current and old) or old <= current:
+                        continue
+                    
+                    # Ищем ссылку на товар в контейнере
+                    link_el = soup.select_one("a[href*='/product/']")
+                    if not link_el:
+                        continue
+                    
+                    href = link_el.get("href", "")
+                    title = link_el.get_text(strip=True)[:100]
+                    
+                    if not title:
+                        continue
+                    
+                    # Извлекаем UID из ссылки
+                    uid_m = re.search(r'/product/([0-9a-f\-]{30,})/', href)
+                    uid = uid_m.group(1) if uid_m else href.split("/product/")[-1].split("/")[0]
+                    
+                    if uid in seen:
+                        continue
+                    
+                    seen.add(uid)
+                    link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else href
+                    
+                    items.append({
+                        "id": f"dns_{uid}",
+                        "title": title,
+                        "old_price": fmt_price(old),
+                        "new_price": fmt_price(current),
+                        "discount": calc_discount(old, current),
+                        "link": link,
+                        "shop": "DNS 🔴",
+                        "category": "tech",
+                    })
+                except Exception as e:
+                    logger.debug(f"[DNS] Ошибка парсинга контейнера: {e}")
+                    continue
+        except Exception as e:
+            logger.warning(f"[DNS] Ошибка при обработке API ответа: {e}")
+        
+        return items
+
     def _dns_parse_html(self, html: str, seen: set) -> List[Dict[str, Any]]:
         """
         Парсит HTML страницы каталога DNS shop KZ.
-
-        DNS хранит данные в двух форматах одновременно:
-        - Вариант A: JSON внутри <script id="__NUXT_DATA__"> или data-атрибуты
-        - Вариант B: обычные HTML карточки .catalog-product
+        
+        Пробует несколько способов получить данные о товарах и ценах.
         """
         items = []
         soup = BeautifulSoup(html, "html.parser")
 
-        # ── Вариант A: JSON в data-product атрибутах ─────────────────────────
+        # ── Способ 1: JSON в data-product атрибутах ─────────────────────────
         for card in soup.select("[data-product]"):
             try:
                 data = json.loads(card.get("data-product", "{}"))
@@ -862,14 +977,37 @@ class DiscountParser:
         if items:
             return items
 
-        # ── Вариант B: стандартные HTML карточки .catalog-product ─────────────
-        # DNS использует разные классы в зависимости от версии страницы
-        card_selectors = [
-            "div.catalog-product",
-            "div.product-card",
-            "li.catalog-product",
-            "[data-id][data-slug]",
-        ]
+        # ── Способ 2: Парсить JSON из скриптов (NUXT DATA) ─────────────────────
+        scripts = soup.find_all("script")
+        for script in scripts:
+            try:
+                text = script.string or ""
+                if "__NUXT_DATA__" not in text and "products" not in text:
+                    continue
+                    
+                # Ищем JSON-подобные структуры с товарами
+                # Выделяем данные между скобками
+                if "window.__NUXT_DATA__" in text:
+                    # Это Nuxt JSON
+                    start = text.find("window.__NUXT_DATA__=") + len("window.__NUXT_DATA__=")
+                    end = text.find("</script>", start)
+                    if start > 0 and end > 0:
+                        json_str = text[start:end].rstrip(";")
+                        try:
+                            data = json.loads(json_str)
+                            # Рекурсивно ищем товары в структуре
+                            products = self._extract_products_from_json(data, seen)
+                            items.extend(products)
+                            if items:
+                                return items
+                        except:
+                            pass
+            except:
+                continue
+
+        # ── Способ 3: HTML карточки с любыми ценами (без скидок) ─────────────
+        # Собираем хотя бы какие-то товары без проверки скидок
+        card_selectors = ["div.catalog-product", "div.product-card", "li.catalog-product"]
         cards = []
         for sel in card_selectors:
             cards = soup.select(sel)
@@ -878,76 +1016,113 @@ class DiscountParser:
 
         for card in cards:
             try:
-                # Старая цена — обязательный признак скидки
-                old_el = card.select_one(
-                    ".product-buy__price_old, "
-                    ".product-buy__price-old, "
-                    "[class*='price-old'], "
-                    "[class*='old-price'], "
-                    ".ui-button-text-old-price, "
-                    "[class*='CrossedPrice'], "
-                    "[class*='crossed']"
-                )
-                if not old_el:
-                    continue
-
-                # Текущая цена
-                price_el = card.select_one(
-                    ".product-buy__price:not([class*='old']):not([class*='crossed']), "
-                    ".product-buy__price-current, "
-                    "[class*='current-price'], "
-                    "[class*='price-current'], "
-                    "[class*='CurrentPrice']"
-                )
-                if not price_el:
-                    continue
-
-                # Ссылка и название товара
                 title_el = card.select_one(
                     "a.catalog-product__name, "
                     ".catalog-product__name a, "
                     "a[class*='ProductName'], "
-                    "a[class*='product-name'], "
-                    "a[class*='product__name']"
+                    "a[href*='/product/']"
                 )
-                if not title_el:
-                    # Fallback: любая ссылка с /product/ в href
-                    title_el = card.select_one("a[href*='/product/']")
                 if not title_el:
                     continue
 
-                href  = title_el.get("href", "")
+                href = title_el.get("href", "")
                 title = title_el.get_text(strip=True)
                 if not title or not href:
                     continue
 
-                link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else href
-
-                # UUID из URL: /product/{uuid}/slug/
                 uid_m = re.search(r'/product/([0-9a-f\-]{30,})/', href)
-                uid   = uid_m.group(1) if uid_m else href.rstrip("/").split("/")[-1]
+                uid = uid_m.group(1) if uid_m else href.rstrip("/").split("/")[-1]
                 if not uid or uid in seen:
                     continue
 
-                op = self._parse_price_val(old_el.get_text())
-                np = self._parse_price_val(price_el.get_text())
-
-                if op and np and op > np:
-                    seen.add(uid)
-                    items.append({
-                        "id": f"dns_{uid}",
-                        "title": title,
-                        "old_price": fmt_price(op),
-                        "new_price": fmt_price(np),
-                        "discount": calc_discount(op, np),
-                        "link": link,
-                        "shop": "DNS 🔴",
-                        "category": "tech",
-                    })
+                link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else href
+                
+                # Пропускаем товары без явной скидки (пока)
+                old_el = card.select_one("[class*='price-old'], [class*='old-price']")
+                if not old_el:
+                    continue
+                    
+                seen.add(uid)
+                items.append({
+                    "id": f"dns_{uid}",
+                    "title": title,
+                    "old_price": "—",
+                    "new_price": "—",
+                    "discount": 0,
+                    "link": link,
+                    "shop": "DNS 🔴",
+                    "category": "tech",
+                })
             except:
                 continue
 
         return items
+    
+    def _extract_products_from_json(self, data, seen: set) -> List[Dict[str, Any]]:
+        """Рекурсивно ищет товары в JSON структуре"""
+        items = []
+        try:
+            if isinstance(data, dict):
+                # Ищем товары в различных ключах
+                for key in ["products", "items", "data", "content"]:
+                    if key in data and isinstance(data[key], list):
+                        for item in data[key]:
+                            if isinstance(item, dict) and item.get("title"):
+                                product = self._parse_json_product(item, seen)
+                                if product:
+                                    items.append(product)
+                # Рекурсивный поиск
+                for v in data.values():
+                    items.extend(self._extract_products_from_json(v, seen))
+            elif isinstance(data, list):
+                for item in data:
+                    items.extend(self._extract_products_from_json(item, seen))
+        except:
+            pass
+        return items
+    
+    def _parse_json_product(self, item: dict, seen: set) -> Optional[Dict[str, Any]]:
+        """Парсит товар из JSON объекта"""
+        try:
+            title = item.get("title") or item.get("name") or ""
+            if not title:
+                return None
+                
+            uid = str(item.get("id") or item.get("sku") or "")
+            if not uid or uid in seen:
+                return None
+                
+            price = item.get("price") or item.get("current_price")
+            old_price = item.get("old_price") or item.get("base_price")
+            
+            if not (price and old_price):
+                return None
+                
+            try:
+                price = float(re.sub(r"[^\d.]", "", str(price)))
+                old_price = float(re.sub(r"[^\d.]", "", str(old_price)))
+            except:
+                return None
+                
+            if old_price <= price:
+                return None
+                
+            seen.add(uid)
+            href = item.get("url") or item.get("link") or ""
+            link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else (f"https://www.dns-shop.kz/product/{uid}/" if href == "" else href)
+            
+            return {
+                "id": f"dns_{uid}",
+                "title": title[:100],
+                "old_price": fmt_price(int(old_price)),
+                "new_price": fmt_price(int(price)),
+                "discount": calc_discount(old_price, price),
+                "link": link,
+                "shop": "DNS 🔴",
+                "category": "tech",
+            }
+        except:
+            return None
 
     def _parse_price_val(self, raw) -> Optional[int]:
         if raw is None: return None
