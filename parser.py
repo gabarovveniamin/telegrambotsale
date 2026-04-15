@@ -724,7 +724,16 @@ class DiscountParser:
         found = []
         seen_ids = set()
 
-        r = await safe_request(session, "GET", "https://www.dns-shop.kz/catalog/", headers=self.base_headers)
+        # Улучшенные headers для DNS
+        dns_headers = {
+            **self.base_headers,
+            "Referer": "https://www.dns-shop.kz/",
+            "Origin": "https://www.dns-shop.kz",
+            "DNT": "1",
+            "Connection": "keep-alive",
+        }
+
+        r = await safe_request(session, "GET", "https://www.dns-shop.kz/catalog/", headers=dns_headers)
         if not r:
             logger.warning("[DNS] Не удалось получить страницу каталога для поиска категорий")
             return found
@@ -772,6 +781,15 @@ class DiscountParser:
             logger.warning("[DNS] Список категорий пустой, пропускаем DNS")
             return result
 
+        # Особые headers для DNS (более агрессивные)
+        dns_headers = {
+            **self.base_headers,
+            "Referer": "https://www.dns-shop.kz/",
+            "Origin": "https://www.dns-shop.kz",
+            "DNT": "1",
+            "Connection": "keep-alive",
+        }
+
         for cat_id, cat_slug in categories:
             cat_url = f"https://www.dns-shop.kz/catalog/{cat_id}/{cat_slug}/"
 
@@ -782,7 +800,7 @@ class DiscountParser:
 
                 r = await safe_request(
                     session, "GET", cat_url,
-                    headers={**self.base_headers, "Referer": "https://www.dns-shop.kz/catalog/"},
+                    headers=dns_headers,
                     params=params,
                 )
                 if not r:
