@@ -34,85 +34,80 @@ class ScraperService:
             
             await browser.close()
             
-        seen = set()
-        unique_list = []
+        seen_ids = set()
+        final_list = []
         for i in all_items:
-            if i["id"] not in seen:
-                seen.add(i["id"])
-                unique_list.append(i)
+            if i["id"] not in seen_ids:
+                seen_ids.add(i["id"])
+                final_list.append(i)
                 
-        logger.info(f"[ScraperService] Глубокий сбор завершен. Итого уникальных товаров: {len(unique_list)}")
-        return unique_list
+        logger.info(f"[ScraperService] Глобальный сбор завершен. ИТОГО УНИКАЛЬНЫХ: {len(final_list)}")
+        return final_list
 
     async def _parse_category_deep(self, context, url: str, category_label: str) -> list:
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
         
-        category_items = []
+        captured_data = {} # Используем словарь для дедупликации по ID прямо в процессе
         try:
             category_name = url.split('/')[-2].replace('%20', ' ')
-            logger.info(f"[ScraperService] Раздел: {category_name}")
+            logger.info(f"[ScraperService] Запуск конвейера в разделе: {category_name}")
             
             await page.goto(url, wait_until="load", timeout=45000)
             
-            # Скроллим
-            for _ in range(8):
+            # Цикл: скролл + моментальный сбор
+            for step in range(12):
+                # 1. Скроллим
                 await page.evaluate("window.scrollBy(0, 1000)")
-                await asyncio.sleep(1)
-            
-            await asyncio.sleep(3)
-            
-            # Собираем ВСЕ карточки
-            cards = await page.query_selector_all("[class*='card'], .item-card, .p-card")
-            logger.info(f"[ScraperService] Найдено {len(cards)} карточек в {category_name}")
-            
-            for card in cards:
-                try:
-                    # Извлекаем данные через evaluate, это надежнее чем query_selector
-                    data = await card.evaluate("""(node) => {
-                        const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
-                        const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
-                        
-                        if (!titleEl || !priceEl) return null;
-                        
-                        return {
-                            title: titleEl.innerText,
-                            href: titleEl.getAttribute('href'),
-                            priceText: priceEl.innerText
-                        };
-                    }""")
-                    
-                    if data:
-                        price_val = self._extract_price(data['priceText'])
-                        if price_val and data['href']:
-                            product_id = data['href'].split('/')[-2] if '/' in data['href'] else data['href']
-                            category_items.append({
-                                "id": f"kp_all_{product_id}",
-                                "title": data['title'].strip(),
-                                "new_price": price_val,
-                                "old_price": 0,
-                                "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
-                                "shop": "Kaspi", "category": category_label
-                            })
-                except: continue
+                await asyncio.sleep(1.5) # Ждем прогрузку
                 
-            logger.info(f"[ScraperService] Успешно извлечено: {len(category_items)}")
+                # 2. Собираем всё, что сейчас видно в DOM
+                cards = await page.query_selector_all("[class*='card'], .item-card, .p-card")
+                for card in cards:
+                    try:
+                        data = await card.evaluate("""(node) => {
+                            const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
+                            const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
+                            if (!titleEl || !priceEl) return null;
+                            return {
+                                title: titleEl.innerText,
+                                href: titleEl.getAttribute('href'),
+                                priceText: priceEl.innerText
+                            };
+                        }""")
+                        
+                        if data and data['href']:
+                            p_id = data['href'].split('/')[-2] if '/' in data['href'] else data['href']
+                            full_id = f"kp_all_{p_id}"
+                            
+                            if full_id not in captured_data:
+                                price_val = self._extract_price(data['priceText'])
+                                if price_val:
+                                    captured_data[full_id] = {
+                                        "id": full_id,
+                                        "title": data['title'].strip(),
+                                        "new_price": price_val,
+                                        "old_price": 0,
+                                        "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
+                                        "shop": "Kaspi", "category": category_label
+                                    }
+                    except: continue
+                
+                if step % 4 == 0:
+                    logger.info(f"[ScraperService] Шаг {step}/12: уже собрано {len(captured_data)} товаров...")
+
+            logger.info(f"[ScraperService] Раздел {category_name} завершен. Собрано: {len(captured_data)}")
         except Exception as e:
             logger.error(f"[ScraperService] Ошибка в {url}: {e}")
         finally:
             await page.close()
             
-        return category_items
+        return list(captured_data.values())
 
     def _extract_price(self, text: str) -> Optional[int]:
         if not text: return None
-        # Если в строке есть 'x' и 'рассрочку' — это блок рассрочки, пытаемся найти основную цену
-        # Обычно основная цена идет ПЕРВОЙ или она КРУПНЕЕ.
-        # Просто убираем всё кроме цифр. Если там "120 000 ₸ 5 000 ₸ x 24", 
-        # то забираем первые цифры до пробела или знака рассрочки.
-        
-        # Очищаем от мусора
-        text = text.split('x')[0].split('х')[0] # отсекаем всё после знака рассрочки
+        # Убираем хвост рассрочки перед извлечением цифр
+        text = text.split('x')[0].split('х')[0]
         digits = re.sub(r"[^\d]", "", text)
         return int(digits) if digits else None
 
