@@ -127,6 +127,15 @@ class Database:
                 )
             """)
 
+            # ── Product Prices (Global tracking) ──────────────────────────────
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS product_prices (
+                    product_id  TEXT PRIMARY KEY,
+                    price       BIGINT NOT NULL,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
             # Indexes
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_tracked_user ON tracked_items(user_id)
@@ -134,8 +143,29 @@ class Database:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)
             """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_product_prices_update ON product_prices(updated_at)
+            """)
 
         logger.info("Database tables initialized.")
+
+    # ─────────────────────── Product Prices ───────────────────────────────────
+
+    async def get_product_price(self, product_id: str) -> Optional[int]:
+        """Get last known price of a product."""
+        row = await self.pool.fetchrow("SELECT price FROM product_prices WHERE product_id = $1", product_id)
+        return row["price"] if row else None
+
+    async def update_product_price(self, product_id: str, price: int):
+        """Update or insert product price."""
+        await self.pool.execute(
+            """
+            INSERT INTO product_prices (product_id, price, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (product_id) DO UPDATE SET price = $2, updated_at = NOW()
+            """,
+            product_id, price
+        )
 
     # ─────────────────────── Users ────────────────────────────────────────────
 

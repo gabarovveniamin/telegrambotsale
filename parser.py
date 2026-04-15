@@ -327,26 +327,44 @@ class DiscountParser:
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
-        Парсит скидки Kaspi через Playwright (браузерный метод).
+        Умный мониторинг цен Kaspi: сравнивает текущие цены с историей в БД.
+        Позволяет находить скидки, даже если магазин их не афиширует (без старой цены).
         """
-        logger.info("[Kaspi] Запуск браузерного парсинга через ScraperService...")
-        raw_items = await scraper_service.fetch_kaspi_discounts()
+        logger.info("[Kaspi] Запуск глобального мониторинга цен...")
+        from services.scraper import scraper_service
+        from database import db
         
+        raw_items = await scraper_service.fetch_kaspi_discounts()
         results = []
+        
         for item in raw_items:
-            # Превращаем в формат, который ожидает остальная часть бота
-            results.append({
-                "id": item["id"],
-                "title": item["title"],
-                "old_price": fmt_price(int(item["old_price"])),
-                "new_price": fmt_price(int(item["new_price"])),
-                "discount": calc_discount(item["old_price"], item["new_price"]),
-                "link": item["link"],
-                "shop": item["shop"],
-                "category": item["category"]
-            })
+            product_id = item["id"]
+            current_price = int(item["new_price"])
             
-        logger.info(f"[Kaspi] Браузерный метод собрал {len(results)} товаров")
+            # Получаем последнюю известную цену из нашей базы
+            last_price = await db.get_product_price(product_id)
+            
+            if last_price:
+                # Если текущая цена НИЖЕ той, что мы знали — значит это скидка!
+                if current_price < last_price:
+                    # Порог в 2%, чтобы не спамить при изменении цены на 10 тенге
+                    if (last_price - current_price) / last_price >= 0.02:
+                        results.append({
+                            "id": product_id,
+                            "title": item["title"],
+                            "old_price": fmt_price(last_price),
+                            "new_price": fmt_price(current_price),
+                            "discount": calc_discount(last_price, current_price),
+                            "link": item["link"],
+                            "shop": "Kaspi",
+                            "category": item["category"]
+                        })
+                        logger.info(f"[Kaspi] Скидка: {item['title']} {last_price} -> {current_price}")
+            
+            # Обновляем (или создаем) запись в базе на будущее
+            await db.update_product_price(product_id, current_price)
+            
+        logger.info(f"[Kaspi] Обработка завершена. Найдено новых скидок: {len(results)}")
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
