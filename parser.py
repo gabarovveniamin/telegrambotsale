@@ -769,10 +769,9 @@ class DiscountParser:
         Парсит скидочные товары с dns-shop.kz используя API.
         
         Алгоритм:
-        1. Получает ID товаров со страницы категории (из data-entity атрибутов)
+        1. Получает ID товаров со страницы категории
         2. Отправляет POST запрос на /ajax-state/product-buy/ с ID товаров
         3. Получает JSON с ценами для каждого товара
-        4. Фильтрует товары со скидками (old_price > current_price)
         """
         result = []
         seen = set()
@@ -782,29 +781,26 @@ class DiscountParser:
             logger.warning("[DNS] Список категорий пустой, пропускаем DNS")
             return result
 
-        dns_headers = {
+        # Headers для обычных GET запросов
+        get_headers = {
             **self.base_headers,
             "Referer": "https://www.dns-shop.kz/",
-            "Origin": "https://www.dns-shop.kz",
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
         }
 
         for cat_id, cat_slug in categories:
             cat_url = f"https://www.dns-shop.kz/catalog/{cat_id}/{cat_slug}/"
 
-            for page in range(1, 4):  # до 3 страниц
-                params = {"order": 6}  # по скидке
+            for page in range(1, 4):
+                params = {"order": 6}
                 if page > 1:
                     params["p"] = page
 
-                # 1. Получаем страницу категории для сбора ID товаров
-                r = await safe_request(session, "GET", cat_url, headers=dns_headers, params=params)
+                # Получаем страницу категории
+                r = await safe_request(session, "GET", cat_url, headers=get_headers, params=params)
                 if not r:
                     break
 
-                # 2. Извлекаем ID товаров из HTML
+                # Извлекаем ID товаров из HTML
                 soup = BeautifulSoup(r.text, "html.parser")
                 product_ids = []
                 
@@ -816,16 +812,12 @@ class DiscountParser:
                 if not product_ids:
                     break
 
-                # 3. Формируем batch запросы на API (по 18 товаров за раз как в примере)
+                # Обрабатываем batch товаров
                 for batch_start in range(0, len(product_ids), 18):
                     batch = product_ids[batch_start:batch_start + 18]
                     
-                    # Формируем payload как в твоем примере
                     containers = [
-                        {
-                            "id": f"as-batch-{i}",
-                            "data": {"id": pid}
-                        }
+                        {"id": f"as-batch-{i}", "data": {"id": pid}}
                         for i, pid in enumerate(batch)
                     ]
                     
@@ -834,29 +826,41 @@ class DiscountParser:
                         "containers": containers
                     }
 
-                    # 4. Отправляем POST запрос
+                    # Headers специально для AJAX POST запроса к /ajax-state/
+                    api_headers = {
+                        "Host": "www.dns-shop.kz",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Accept": "application/json, text/plain, */*",
+                        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                        "Content-Type": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Origin": "https://www.dns-shop.kz",
+                        "Referer": f"https://www.dns-shop.kz/catalog/{cat_id}/{cat_slug}/",
+                        "Sec-Fetch-Dest": "empty",
+                        "Sec-Fetch-Mode": "cors",
+                        "Sec-Fetch-Site": "same-origin",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                    }
+
                     api_url = "https://www.dns-shop.kz/ajax-state/product-buy/"
                     api_r = await safe_request(
                         session, "POST", api_url,
-                        headers=dns_headers,
+                        headers=api_headers,
                         json_data=payload
                     )
                     
                     if not api_r:
                         continue
 
-                    # 5. Парсим ответ
                     try:
                         api_data = api_r.json()
-                        if api_data.get("type") == "product-buy":
-                            items = await self._parse_dns_api_response(api_data, batch, seen)
-                            result.extend(items)
+                        items = await self._parse_dns_api_response(api_data, batch, seen)
+                        result.extend(items)
                     except Exception as e:
-                        logger.debug(f"[DNS] Ошибка парсинга API ответа: {e}")
+                        logger.debug(f"[DNS] Ошибка парсинга API: {e}")
                     
-                    await asyncio.sleep(0.3)
-
-                logger.debug(f"[DNS] {cat_slug} стр.{page} → {len([x for x in result if x])} товаров")
+                    await asyncio.sleep(0.5)
 
         logger.info(f"[DNS] Собрано: {len(result)} товаров со скидками")
         return result
