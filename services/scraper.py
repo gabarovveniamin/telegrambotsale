@@ -23,27 +23,20 @@ class ScraperService:
                 locale="ru-RU"
             )
             page = await context.new_page()
-            
-            # Применяем стелс-режим для обхода защиты от ботов
             await Stealth().apply_stealth_async(page)
             
             try:
-                # Для SPA важно дождаться, пока сетевая активность утихнет (networkidle)
                 await page.goto(url, wait_until="networkidle", timeout=30000)
-                
-                # Принудительная пауза для финальных скриптов
                 await asyncio.sleep(2)
 
-                # Список возможных селекторов для цен (на основе популярных магазинов)
                 priority_selectors = [
-                    ".item-card__prices-price",   # Kaspi
-                    ".item-card__price-value",    # Kaspi Alt
-                    ".product-price__current",    # Technodom
-                    ".price",                     # General
-                    ".current-price",             # General
+                    ".item-card__prices-price",
+                    ".item-card__price-value",
+                    ".product-price__current",
+                    ".price",
+                    ".current-price",
                 ]
                 
-                # Пытаемся найти цену по приоритетным селекторам
                 for selector in priority_selectors:
                     elements = await page.query_selector_all(selector)
                     for el in elements:
@@ -52,13 +45,8 @@ class ScraperService:
                         if price:
                             return price
 
-                # Танцы с бубном: если селекторы не сработали, ищем любой текст с валютой
-                content = await page.content()
-                # Ищем числа рядом с символом тенге или словом "₸"
-                potential_prices = []
-                
-                # Ищем все элементы, которые могут содержать цену
                 all_text_elements = await page.query_selector_all("span, div, b, strong")
+                potential_prices = []
                 for el in all_text_elements:
                     text = await el.inner_text()
                     if "₸" in text or "тг" in text.lower():
@@ -67,27 +55,19 @@ class ScraperService:
                              potential_prices.append(price)
 
                 if not potential_prices:
-                    logger.warning(f"[ScraperService] Цена не найдена: {url}")
                     return None
-
                 return min(potential_prices)
 
-            except PlaywrightTimeoutError:
-                logger.error(f"[ScraperService] Тайм-аут при закрузке: {url}")
-                return None
             except Exception as e:
-                logger.error(f"[ScraperService] Ошибка парсинга {url}: {e}")
+                logger.error(f"[ScraperService] Ошибка fetch_price {url}: {e}")
                 return None
             finally:
                 await browser.close()
 
     def _extract_price(self, text: str) -> Optional[int]:
         if not text: return None
-        # Убираем всё кроме цифр
         clean_text = re.sub(r"[^\d]", "", text)
-        if clean_text:
-            return int(clean_text)
-        return None
+        return int(clean_text) if clean_text else None
 
     async def fetch_kaspi_discounts(self) -> list:
         """
@@ -110,44 +90,38 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # СКРОЛЛ: Прокручиваем страницу вниз, чтобы сработала подгрузка (Lazy Load)
+                # Скроллинг для подгрузки контента
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                 await asyncio.sleep(2)
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(5)
+                await asyncio.sleep(4)
                 
                 title = await page.title()
-                logger.info(f"[ScraperService] Kaspi Title: {title}")
+                logger.info(f"[ScraperService] Title: {title}")
                 
-                # Ждем хотя бы одну карточку
-                for selector in [".item-card", ".p-card", "a[href*='/shop/p/']"]:
-                    try:
-                        await page.wait_for_selector(selector, timeout=5000)
-                        break
-                    except: continue
-
+                # Поиск карточек
                 cards = await page.query_selector_all(".item-card, .p-card")
                 logger.info(f"[ScraperService] Найдено карточек: {len(cards)}")
                 
                 if not cards:
+                    # Если карточек нет, ищем любые товарные ссылки
                     links = await page.query_selector_all("a[href*='/shop/p/']")
                     logger.info(f"[ScraperService] Найдено ссылок: {len(links)}")
                     if links:
-                        # Если нашли только ссылки, пробуем создать базовые объекты
-                        for link in links[:15]:
+                        for link in links[:12]:
                             t_text = await link.inner_text()
                             href = await link.get_attribute("href")
-                            if href and "/shop/p/" in href:
+                            if href and t_text:
                                 items.append({
                                     "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": t_text.strip() or "Товар Kaspi",
+                                    "title": t_text.strip(),
                                     "new_price": 0, "old_price": 0,
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi", "category": "tech"
                                 })
                 
                 for card in cards:
-                  try:
+                    try:
                         title_el = await card.query_selector("a[class*='name'], a[class*='title']")
                         price_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
                         
@@ -166,10 +140,11 @@ class ScraperService:
                                     "shop": "Kaspi",
                                     "category": "tech"
                                 })
-                    except: continue
+                    except:
+                        continue
                         
             except Exception as e:
-                logger.error(f"[ScraperService] Ошибка в fetch_kaspi_discounts: {e}")
+                logger.error(f"[ScraperService] Ошибка в Kaspi: {e}")
             finally:
                 await browser.close()
             return items
