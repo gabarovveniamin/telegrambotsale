@@ -76,7 +76,12 @@ async def safe_request(
 
             if r.status_code == 200:
                 return r
-            logger.warning(f"[attempt {attempt}/{RETRY_COUNT}] {url} → HTTP {r.status_code}")
+            elif r.status_code >= 400:
+                # Логируем ошибок статус, но не повторяем - это не временная ошибка
+                logger.warning(f"[{url}] HTTP {r.status_code}, прекращаем повторы")
+                return None
+            else:
+                logger.warning(f"[attempt {attempt}/{RETRY_COUNT}] {url} → HTTP {r.status_code}")
         except Exception as e:
             logger.warning(f"[attempt {attempt}/{RETRY_COUNT}] {url} → {e}")
 
@@ -844,21 +849,41 @@ class DiscountParser:
                     }
 
                     api_url = "https://www.dns-shop.kz/ajax-state/product-buy/"
+                    
+                    # Отправляем JSON как строка в data, а не через json_data параметр
+                    json_str = json.dumps(payload, ensure_ascii=False)
+                    
                     api_r = await safe_request(
                         session, "POST", api_url,
                         headers=api_headers,
-                        json_data=payload
+                        content=json_str
                     )
                     
                     if not api_r:
+                        logger.warning(f"[DNS] API запрос вернул пусто: {api_r}")
                         continue
 
                     try:
+                        # Проверяем статус код
+                        if api_r.status_code != 200:
+                            logger.warning(f"[DNS] API возвращает статус {api_r.status_code}, текст: {api_r.text[:200]}")
+                            continue
+                        
+                        # Проверяем, что API вообще возвращает JSON
+                        response_text = api_r.text.strip()
+                        if not response_text:
+                            logger.warning(f"[DNS] API вернул пустой ответ")
+                            continue
+                        
                         api_data = api_r.json()
+                        if not api_data:
+                            logger.warning(f"[DNS] JSON парсинг вернул пусто: {response_text[:200]}")
+                            continue
+                        
                         items = await self._parse_dns_api_response(api_data, batch, seen)
                         result.extend(items)
                     except Exception as e:
-                        logger.debug(f"[DNS] Ошибка парсинга API: {e}")
+                        logger.warning(f"[DNS] Ошибка парсинга API ответа: {e}\n  Ответ был: {api_r.text[:200] if api_r else 'None'}")
                     
                     await asyncio.sleep(0.5)
 
