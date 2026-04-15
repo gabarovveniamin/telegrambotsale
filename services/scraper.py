@@ -112,7 +112,14 @@ class ScraperService:
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-            context = await browser.new_context(user_agent=self.user_agent)
+            context = await browser.new_context(
+                user_agent=self.user_agent,
+                viewport={"width": 1920, "height": 1080},
+                locale="ru-RU",
+                extra_http_headers={
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                }
+            )
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
             
