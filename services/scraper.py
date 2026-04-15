@@ -13,7 +13,7 @@ class ScraperService:
 
     async def fetch_price(self, url: str) -> Optional[int]:
         """
-        Универсальная функция для получения цены с любого сайта через Playwright.
+        Универсальная функция для получения цены товара по прямой ссылке.
         """
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
@@ -54,9 +54,7 @@ class ScraperService:
                         if price and 500 < price < 2000000:
                              potential_prices.append(price)
 
-                if not potential_prices:
-                    return None
-                return min(potential_prices)
+                return min(potential_prices) if potential_prices else None
             except:
                 return None
             finally:
@@ -69,11 +67,11 @@ class ScraperService:
 
     async def fetch_kaspi_discounts(self) -> list:
         """
-        Парсит список товаров из Kaspi Shop для диагностики.
+        Парсит список товаров со скидкой из Kaspi Shop.
         """
-        # ТЕСТ: Убираем фильтр скидок, чтобы проверить, видим ли мы вообще товары
+        # Используем проверенный рабочий URL
         url = "https://kaspi.kz/shop/c/smartphones/?q=%3AavailableInZones%3A750000000"
-        logger.info(f"[ScraperService] Тестовый вход на Kaspi (БЕЗ фильтра скидок): {url}")
+        logger.info(f"[ScraperService] Сбор скидок Kaspi: {url}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
@@ -89,40 +87,38 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # Имитируем скролл для Lazy Load
-                await page.evaluate("window.scrollTo(0, 800)")
-                await asyncio.sleep(3)
-                await page.evaluate("window.scrollTo(0, 1600)")
-                await asyncio.sleep(3)
+                # Имитируем скролл, чтобы прогрузить скидки
+                await page.evaluate("window.scrollTo(0, 1000)")
+                await asyncio.sleep(4)
                 
-                title = await page.title()
-                logger.info(f"[ScraperService] Title: {title}")
-                
-                # Пробуем найти карточки всеми возможными способами
-                cards = await page.query_selector_all(".item-card, .p-card, [class*='card']")
-                logger.info(f"[ScraperService] Найдено элементов-карточек: {len(cards)}")
-                
-                if not cards:
-                    # Если карточек 0, смотрим на HTML
-                    snippet = await page.evaluate("document.body.innerText.substring(0, 300)")
-                    logger.info(f"[ScraperService] Тест текста страницы: {snippet}...")
+                # Ищем карточки
+                cards = await page.query_selector_all(".item-card, .p-card")
+                logger.info(f"[ScraperService] Обработка {len(cards)} карточек...")
                 
                 for card in cards:
                     try:
                         title_el = await card.query_selector("a[class*='name'], a[class*='title']")
-                        price_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
+                        # У Каспи новая цена — .item-card__prices-price, старая (зачеркнутая) — .item-card__prices-old или base
+                        price_new_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
+                        price_old_el = await card.query_selector("[class*='prices-old'], [class*='price-old'], [class*='prices-base']")
                         
-                        if title_el and price_el:
-                            t_text = await title_el.inner_text()
+                        if title_el and price_new_el:
+                            title = (await title_el.inner_text()).strip()
                             href = await title_el.get_attribute("href")
-                            p_val = "".join([c for c in await price_el.inner_text() if c.isdigit()])
+                            new_price = self._extract_price(await price_new_el.inner_text())
                             
-                            if p_val and href:
+                            # Если нашли старую цену — это 100% скидка
+                            old_price = None
+                            if price_old_el:
+                                old_price = self._extract_price(await price_old_el.inner_text())
+                            
+                            # Только если есть и старая, и новая цена, и старая выше новой
+                            if new_price and old_price and old_price > new_price:
                                 items.append({
                                     "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": t_text.strip(),
-                                    "new_price": int(p_val),
-                                    "old_price": int(int(p_val) * 1.1),
+                                    "title": title,
+                                    "new_price": new_price,
+                                    "old_price": old_price,
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi", "category": "tech"
                                 })
@@ -130,9 +126,11 @@ class ScraperService:
                         continue
                         
             except Exception as e:
-                logger.error(f"[ScraperService] Ошибка в Kaspi: {e}")
+                logger.error(f"[ScraperService] Ошибка Kaspi: {e}")
             finally:
                 await browser.close()
+            
+            logger.info(f"[ScraperService] Итого реальных скидок Kaspi найдено: {len(items)}")
             return items
 
 scraper_service = ScraperService()
