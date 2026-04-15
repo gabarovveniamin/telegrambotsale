@@ -30,11 +30,10 @@ class ScraperService:
                 url = f"https://kaspi.kz/shop/c/{target['slug']}/?q=%3AavailableInZones%3A750000000"
                 items_from_cat = await self._parse_category_deep(context, url, target['label'])
                 all_items.extend(items_from_cat)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
             
             await browser.close()
             
-        # Удаляем дубликаты перед возвратом
         seen = set()
         unique_list = []
         for i in all_items:
@@ -52,50 +51,54 @@ class ScraperService:
         category_items = []
         try:
             category_name = url.split('/')[-2].replace('%20', ' ')
-            logger.info(f"[ScraperService] Глубокий парсинг: {category_name}")
+            logger.info(f"[ScraperService] Раздел: {category_name}")
             
             await page.goto(url, wait_until="load", timeout=45000)
             
-            # Постепенный скролл с ожиданием прогрузки
-            for _ in range(12):
-                await page.evaluate("window.scrollBy(0, 800)")
-                await asyncio.sleep(1.5)
+            # Скроллим
+            for _ in range(8):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await asyncio.sleep(1)
             
-            # Даем время на отрисовку всех картинок и текстов
             await asyncio.sleep(3)
             
-            # Ищем все возможные карточки
+            # Собираем ВСЕ карточки
             cards = await page.query_selector_all("[class*='card'], .item-card, .p-card")
-            logger.info(f"[ScraperService] Нашел карточек на странице {category_name}: {len(cards)}")
+            logger.info(f"[ScraperService] Найдено {len(cards)} карточек в {category_name}")
             
             for card in cards:
                 try:
-                    # Пробуем несколько вариантов селекторов для названия
-                    title_el = await card.query_selector(".item-card__name-link, [class*='name'], a[class*='title']")
-                    # Пробуем варианты для цены
-                    price_el = await card.query_selector(".item-card__prices-price, [class*='price-once'], [class*='prices-price']")
-                    
-                    if title_el and price_el:
-                        title = (await title_el.inner_text()).strip()
-                        href = await title_el.get_attribute("href")
-                        price_text = await price_el.inner_text()
-                        price_val = self._extract_price(price_text)
+                    # Извлекаем данные через evaluate, это надежнее чем query_selector
+                    data = await card.evaluate("""(node) => {
+                        const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
+                        const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
                         
-                        if price_val and href and title:
-                            product_id = href.split('/')[-2] if '/' in href else href
+                        if (!titleEl || !priceEl) return null;
+                        
+                        return {
+                            title: titleEl.innerText,
+                            href: titleEl.getAttribute('href'),
+                            priceText: priceEl.innerText
+                        };
+                    }""")
+                    
+                    if data:
+                        price_val = self._extract_price(data['priceText'])
+                        if price_val and data['href']:
+                            product_id = data['href'].split('/')[-2] if '/' in data['href'] else data['href']
                             category_items.append({
                                 "id": f"kp_all_{product_id}",
-                                "title": title,
+                                "title": data['title'].strip(),
                                 "new_price": price_val,
                                 "old_price": 0,
-                                "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
+                                "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
                                 "shop": "Kaspi", "category": category_label
                             })
                 except: continue
                 
-            logger.info(f"[ScraperService] Извлечено валидных товаров из {category_name}: {len(category_items)}")
+            logger.info(f"[ScraperService] Успешно извлечено: {len(category_items)}")
         except Exception as e:
-            logger.error(f"[ScraperService] Ошибка в разделе {url}: {e}")
+            logger.error(f"[ScraperService] Ошибка в {url}: {e}")
         finally:
             await page.close()
             
@@ -103,17 +106,18 @@ class ScraperService:
 
     def _extract_price(self, text: str) -> Optional[int]:
         if not text: return None
-        # Игнорируем цену в рассрочку (например "12 000 x 24")
-        if "x" in text or "х" in text:
-           # Ищем цену без 'x'
-           prices = re.findall(r"[\d\s]{5,}₸", text)
-           if not prices: return None
-           text = prices[0]
-           
+        # Если в строке есть 'x' и 'рассрочку' — это блок рассрочки, пытаемся найти основную цену
+        # Обычно основная цена идет ПЕРВОЙ или она КРУПНЕЕ.
+        # Просто убираем всё кроме цифр. Если там "120 000 ₸ 5 000 ₸ x 24", 
+        # то забираем первые цифры до пробела или знака рассрочки.
+        
+        # Очищаем от мусора
+        text = text.split('x')[0].split('х')[0] # отсекаем всё после знака рассрочки
         digits = re.sub(r"[^\d]", "", text)
         return int(digits) if digits else None
 
     async def fetch_price(self, url: str) -> Optional[int]:
+        # (без изменений)
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
@@ -122,7 +126,7 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=30000)
                 await asyncio.sleep(2)
-                el = await page.query_selector(".item-card__prices-price, [class*='price-once'], [class*='prices-price']")
+                el = await page.query_selector("[class*='price-once'], [class*='prices-price']")
                 return self._extract_price(await el.inner_text()) if el else None
             except: return None
             finally: await browser.close()
