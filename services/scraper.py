@@ -12,72 +12,38 @@ class ScraperService:
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
     async def fetch_price(self, url: str) -> Optional[int]:
-        """
-        Универсальная функция для получения цены товара по прямой ссылке.
-        """
+        """Получение цены товара по прямой ссылке."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-            context = await browser.new_context(
-                user_agent=self.user_agent,
-                viewport={"width": 1920, "height": 1080},
-                locale="ru-RU"
-            )
+            context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1920, "height": 1080}, locale="ru-RU")
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
-            
             try:
                 await page.goto(url, wait_until="networkidle", timeout=30000)
                 await asyncio.sleep(2)
-
-                priority_selectors = [
-                    ".item-card__prices-price",
-                    ".item-card__price-value",
-                    ".product-price__current",
-                    ".price",
-                    ".current-price",
-                ]
-                
-                for selector in priority_selectors:
-                    elements = await page.query_selector_all(selector)
-                    for el in elements:
-                        text = await el.inner_text()
-                        price = self._extract_price(text)
-                        if price:
-                            return price
-
-                all_text_elements = await page.query_selector_all("span, div, b, strong")
-                potential_prices = []
-                for el in all_text_elements:
-                    text = await el.inner_text()
-                    if "₸" in text or "тг" in text.lower():
-                        price = self._extract_price(text)
-                        if price and 500 < price < 2000000:
-                             potential_prices.append(price)
-
-                return min(potential_prices) if potential_prices else None
-            except:
+                for selector in [".item-card__prices-price", ".product-price__current", ".price"]:
+                    el = await page.query_selector(selector)
+                    if el: return self._extract_price(await el.inner_text())
                 return None
-            finally:
-                await browser.close()
+            except: return None
+            finally: await browser.close()
 
     def _extract_price(self, text: str) -> Optional[int]:
         if not text: return None
-        clean_text = re.sub(r"[^\d]", "", text)
-        return int(clean_text) if clean_text else None
+        digits = re.sub(r"[^\d]", "", text)
+        return int(digits) if digits else None
 
     async def fetch_kaspi_discounts(self) -> list:
-        """
-        Парсит список товаров со скидкой из Kaspi Shop.
-        """
-        # Используем проверенный рабочий URL
+        """Парсит Kaspi и вручную ищет товары со старой ценой."""
+        # Базовый URL смартфонов в Алматы
         url = "https://kaspi.kz/shop/c/smartphones/?q=%3AavailableInZones%3A750000000"
-        logger.info(f"[ScraperService] Сбор скидок Kaspi: {url}")
+        logger.info(f"[ScraperService] Сбор всех смартфонов Kaspi для поиска скидок: {url}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(
-                user_agent=self.user_agent,
-                viewport={"width": 1280, "height": 800},
+                user_agent=self.user_agent, 
+                viewport={"width": 1920, "height": 1080}, 
                 locale="ru-RU"
             )
             page = await context.new_page()
@@ -87,50 +53,54 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # Имитируем скролл, чтобы прогрузить скидки
-                await page.evaluate("window.scrollTo(0, 1000)")
-                await asyncio.sleep(4)
+                # Делаем серию скроллов, чтобы подгрузить больше товаров (Infinite Scroll)
+                for _ in range(5):
+                    await page.evaluate("window.scrollBy(0, 1000)")
+                    await asyncio.sleep(1.5)
                 
-                # Ищем карточки
+                # Ждем финальную отрисовку
+                await asyncio.sleep(3)
+                
+                title = await page.title()
+                logger.info(f"[ScraperService] Title: {title}")
+                
                 cards = await page.query_selector_all(".item-card, .p-card")
-                logger.info(f"[ScraperService] Обработка {len(cards)} карточек...")
+                logger.info(f"[ScraperService] Проверяю {len(cards)} карточек на наличие акций...")
                 
+                discount_count = 0
                 for card in cards:
                     try:
                         title_el = await card.query_selector("a[class*='name'], a[class*='title']")
-                        # У Каспи новая цена — .item-card__prices-price, старая (зачеркнутая) — .item-card__prices-old или base
+                        # Новая цена
                         price_new_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
-                        price_old_el = await card.query_selector("[class*='prices-old'], [class*='price-old'], [class*='prices-base']")
+                        # Старая (зачеркнутая) цена — ключевой признак скидки
+                        price_old_el = await card.query_selector("[class*='old'], [class*='base'], .item-card__prices-old")
                         
-                        if title_el and price_new_el:
-                            title = (await title_el.inner_text()).strip()
+                        if title_el and price_new_el and price_old_el:
+                            title_text = (await title_el.inner_text()).strip()
                             href = await title_el.get_attribute("href")
-                            new_price = self._extract_price(await price_new_el.inner_text())
+                            new_val = self._extract_price(await price_new_el.inner_text())
+                            old_val = self._extract_price(await price_old_el.inner_text())
                             
-                            # Если нашли старую цену — это 100% скидка
-                            old_price = None
-                            if price_old_el:
-                                old_price = self._extract_price(await price_old_el.inner_text())
-                            
-                            # Только если есть и старая, и новая цена, и старая выше новой
-                            if new_price and old_price and old_price > new_price:
+                            # Добавляем только если есть реальная разница в цене
+                            if new_val and old_val and old_val > new_val:
+                                discount_count += 1
                                 items.append({
                                     "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": title,
-                                    "new_price": new_price,
-                                    "old_price": old_price,
+                                    "title": title_text,
+                                    "new_price": new_val,
+                                    "old_price": old_val,
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi", "category": "tech"
                                 })
-                    except:
-                        continue
+                    except: continue
+                
+                logger.info(f"[ScraperService] Найдено реальных скидок: {discount_count}")
                         
             except Exception as e:
                 logger.error(f"[ScraperService] Ошибка Kaspi: {e}")
             finally:
                 await browser.close()
-            
-            logger.info(f"[ScraperService] Итого реальных скидок Kaspi найдено: {len(items)}")
             return items
 
 scraper_service = ScraperService()
