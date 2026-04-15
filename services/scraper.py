@@ -47,43 +47,54 @@ class ScraperService:
     async def _parse_category_smart(self, context, url: str, category_label: str) -> list:
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
-        
         captured_data = {}
+        
         try:
             category_name = url.split('/')[-2].replace('%20', ' ')
             logger.info(f"[ScraperService] Раздел: {category_name}")
             
             await page.goto(url, wait_until="load", timeout=40000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
-            # --- ФИЛЬТРУЕМ ПОДКАТЕГОРИИ (игнорируем мусор из футера) ---
+            # --- СУПЕР-ФИЛЬТР ПОДКАТЕГОРИЙ ---
             subcat_links = await page.evaluate("""() => {
-                const links = Array.from(document.querySelectorAll('a'));
-                const forbidden = ['clients', 'partners', 'kaspiguidelink', 'categories', 'guide', 'about', 'news', 'maps', 'city', 'business'];
+                // Ищем ссылки ТОЛЬКО в блоках категорий и навигации (не в футере/шапке)
+                const container = document.querySelector('main, .shop-categories, .cas-catalog__categories') || document;
+                const links = Array.from(container.querySelectorAll('a'));
+                const forbidden = [
+                    'clients', 'partners', 'kaspiguidelink', 'categories', 'guide', 'about', 
+                    'news', 'maps', 'city', 'business', 'gos', 'announcements', 'actions', 
+                    'mybank', 'travel', 'mobile', 'pay', 'lifestyle', 'recommendations'
+                ];
+                
                 return links
                     .map(a => a.href)
                     .filter(href => {
                         const isShop = href.includes('/shop/c/');
                         const isNotForbidden = !forbidden.some(word => href.toLowerCase().includes(word));
-                        // Настоящая подкатегория обычно короче и не содержит лишних знаков
-                        return isShop && isNotForbidden && !href.includes('?');
+                        // Проверяем, что это ссылка на конкретный раздел (не главная категорий)
+                        const parts = href.split('/').filter(p => p);
+                        return isShop && isNotForbidden && !href.includes('?') && parts.length >= 5;
                     })
-                    .slice(0, 7); // Берем до 7 топовых подкатегорий
+                    .slice(0, 8); // Берем до 8 подкатегорий
             }""")
             
-            # Уникализируем ссылки
-            links_to_scan = list(set([url] + subcat_links))
+            # Уникализируем
+            links_to_scan = []
+            for l in [url] + subcat_links:
+                if l not in links_to_scan: links_to_scan.append(l)
             
             for scan_url in links_to_scan:
-                cat_slug = scan_url.split('/')[-2]
-                logger.info(f"[ScraperService] -> Ныряем в: {cat_slug}")
                 try:
+                    cat_slug = scan_url.split('/')[-2]
+                    logger.info(f"[ScraperService] -> Сканируем: {cat_slug}")
+                    
                     if scan_url != url:
                         await page.goto(scan_url, wait_until="load", timeout=30000)
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(2)
                     
-                    # Сбор данных на ходу (скролл + капча)
-                    for _ in range(4):
+                    # Глубокий сброр (скролл + сбор)
+                    for _ in range(6):
                         await page.evaluate("window.scrollBy(0, 1000)")
                         await asyncio.sleep(1.2)
                         
@@ -93,7 +104,7 @@ class ScraperService:
                             cards.forEach(node => {
                                 const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
                                 const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
-                                if (titleEl && priceEl) {
+                                if (titleEl && priceEl && titleEl.innerText.length > 3) {
                                     results.push({
                                         title: titleEl.innerText,
                                         href: titleEl.getAttribute('href'),
@@ -117,11 +128,13 @@ class ScraperService:
                                             "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
                                             "shop": "Kaspi", "category": category_label
                                         }
-                except: continue
+                except Exception as inner_e:
+                    logger.error(f"[ScraperService] Ошибка в подкатегории {scan_url}: {inner_e}")
+                    continue
 
-            logger.info(f"[ScraperService] Исследование {category_name} завершено. Итого: {len(captured_data)}")
+            logger.info(f"[ScraperService] {category_name} завершен. Собрано товаров: {len(captured_data)}")
         except Exception as e:
-            logger.error(f"[ScraperService] Глобальная ошибка в разделе {url}: {e}")
+            logger.error(f"[ScraperService] Ошибка в разделе {url}: {e}")
         finally:
             await page.close()
             
