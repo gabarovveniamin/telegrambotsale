@@ -57,9 +57,7 @@ class ScraperService:
                 if not potential_prices:
                     return None
                 return min(potential_prices)
-
-            except Exception as e:
-                logger.error(f"[ScraperService] Ошибка fetch_price {url}: {e}")
+            except:
                 return None
             finally:
                 await browser.close()
@@ -71,16 +69,17 @@ class ScraperService:
 
     async def fetch_kaspi_discounts(self) -> list:
         """
-        Парсит список товаров со скидкой из Kaspi Shop через браузер.
+        Парсит список товаров из Kaspi Shop для диагностики.
         """
-        url = "https://kaspi.kz/shop/c/smartphones/?q=%3AavailableInZones%3A750000000%3AallMerchants%3AisDiscount%3Atrue"
-        logger.info(f"[ScraperService] Запуск парсинга Kaspi. URL: {url}")
+        # ТЕСТ: Убираем фильтр скидок, чтобы проверить, видим ли мы вообще товары
+        url = "https://kaspi.kz/shop/c/smartphones/?q=%3AavailableInZones%3A750000000"
+        logger.info(f"[ScraperService] Тестовый вход на Kaspi (БЕЗ фильтра скидок): {url}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(
                 user_agent=self.user_agent,
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1280, "height": 800},
                 locale="ru-RU"
             )
             page = await context.new_page()
@@ -90,35 +89,23 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # Скроллинг для подгрузки контента
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                await asyncio.sleep(2)
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(4)
+                # Имитируем скролл для Lazy Load
+                await page.evaluate("window.scrollTo(0, 800)")
+                await asyncio.sleep(3)
+                await page.evaluate("window.scrollTo(0, 1600)")
+                await asyncio.sleep(3)
                 
                 title = await page.title()
                 logger.info(f"[ScraperService] Title: {title}")
                 
-                # Поиск карточек
-                cards = await page.query_selector_all(".item-card, .p-card")
-                logger.info(f"[ScraperService] Найдено карточек: {len(cards)}")
+                # Пробуем найти карточки всеми возможными способами
+                cards = await page.query_selector_all(".item-card, .p-card, [class*='card']")
+                logger.info(f"[ScraperService] Найдено элементов-карточек: {len(cards)}")
                 
                 if not cards:
-                    # Если карточек нет, ищем любые товарные ссылки
-                    links = await page.query_selector_all("a[href*='/shop/p/']")
-                    logger.info(f"[ScraperService] Найдено ссылок: {len(links)}")
-                    if links:
-                        for link in links[:12]:
-                            t_text = await link.inner_text()
-                            href = await link.get_attribute("href")
-                            if href and t_text:
-                                items.append({
-                                    "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": t_text.strip(),
-                                    "new_price": 0, "old_price": 0,
-                                    "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
-                                    "shop": "Kaspi", "category": "tech"
-                                })
+                    # Если карточек 0, смотрим на HTML
+                    snippet = await page.evaluate("document.body.innerText.substring(0, 300)")
+                    logger.info(f"[ScraperService] Тест текста страницы: {snippet}...")
                 
                 for card in cards:
                     try:
@@ -126,19 +113,18 @@ class ScraperService:
                         price_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
                         
                         if title_el and price_el:
-                            title_text = await title_el.inner_text()
+                            t_text = await title_el.inner_text()
                             href = await title_el.get_attribute("href")
-                            price_val = "".join([c for c in await price_el.inner_text() if c.isdigit()])
+                            p_val = "".join([c for c in await price_el.inner_text() if c.isdigit()])
                             
-                            if price_val and href:
+                            if p_val and href:
                                 items.append({
                                     "id": f"kp_br_{href.split('/')[-2]}",
-                                    "title": title_text.strip(),
-                                    "new_price": int(price_val),
-                                    "old_price": int(int(price_val) * 1.1),
+                                    "title": t_text.strip(),
+                                    "new_price": int(p_val),
+                                    "old_price": int(int(p_val) * 1.1),
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
-                                    "shop": "Kaspi",
-                                    "category": "tech"
+                                    "shop": "Kaspi", "category": "tech"
                                 })
                     except:
                         continue
