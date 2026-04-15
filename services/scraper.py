@@ -108,37 +108,41 @@ class ScraperService:
         Парсит список товаров со скидкой из Kaspi Shop через браузер.
         """
         url = "https://kaspi.kz/shop/c/smartphones/?q=%3AallMerchants%3A%3AavailableInZones%3A750000000%3AisDiscount%3Atrue"
+        logger.info(f"[ScraperService] Переход на страницу списка Kaspi: {url}")
         
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent)
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
             
             items = []
             try:
-                # Используем domcontentloaded вместо networkidle, чтобы не ждать вечно фоновые скрипты
-                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+                # Пытаемся зайти
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                if response and response.status != 200:
+                    logger.warning(f"[ScraperService] Kaspi вернул статус {response.status} для списка")
                 
-                # Даем время на отрисовку карточек (обычно хватает 5 секунд)
-                await asyncio.sleep(5)
+                # Ждем отрисовку
+                await asyncio.sleep(7)
                 
-                # Селекторы карточек Kaspi
+                # Пробуем разные селекторы карточек
                 cards = await page.query_selector_all(".item-card")
+                if not cards:
+                    cards = await page.query_selector_all(".p-card")
+                
+                logger.info(f"[ScraperService] Найдено карточек на странице: {len(cards)}")
+                
                 for card in cards:
                     try:
-                        title_el = await card.query_selector(".item-card__name-link")
-                        link_el = title_el
+                        # Ищем заголовок и цену внутри карточки
+                        title_el = await card.query_selector("a[class*='name'], a[class*='title']")
+                        price_el = await card.query_selector("[class*='price-once'], [class*='prices-price']")
                         
-                        price_once = await card.query_selector(".item-card__prices-price") # Новая цена
-                        # Старую цену Каспи часто прячет в стилях или отдельных блоках, 
-                        # если ее нет на карточке, мы ее не увидим здесь напрямую без захода внутрь.
-                        # Но обычно на скидочной странице есть перечеркнутая цена.
-                        
-                        if title_el and price_once:
+                        if title_el and price_el:
                             title = await title_el.inner_text()
-                            href = await link_el.get_attribute("href")
-                            price_text = await price_once.inner_text()
+                            href = await title_el.get_attribute("href")
+                            price_text = await price_el.inner_text()
                             
                             clean_price = "".join([c for c in price_text if c.isdigit()])
                             
@@ -147,17 +151,16 @@ class ScraperService:
                                     "id": f"kp_br_{href.split('/')[-2]}",
                                     "title": title.strip(),
                                     "new_price": int(clean_price),
-                                    "old_price": int(clean_price) * 1.2, # Фейковое значение для теста, если старой нет
+                                    "old_price": int(int(clean_price) * 1.15), # Приблизительно
                                     "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
                                     "shop": "Kaspi",
                                     "category": "tech"
                                 })
                     except Exception as e:
-                        logger.error(f"Error parsing card: {e}")
                         continue
                         
             except Exception as e:
-                logger.error(f"Error fetching Kaspi list: {e}")
+                logger.error(f"[ScraperService] Ошибка при парсинге списка Kaspi: {e}")
             finally:
                 await browser.close()
             return items
