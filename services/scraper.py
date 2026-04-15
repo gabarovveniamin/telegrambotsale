@@ -10,21 +10,20 @@ logger = logging.getLogger(__name__)
 class ScraperService:
     def __init__(self):
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        # Список самых популярных категорий на Каспи
-        self.categories = {
-            "tech": [
-                "smartphones", "laptops", "televisions", "tablets", 
-                "refrigerators", "washing-machines", "headphones",
-                "vacuum-cleaners", "multicookers", "air-conditioners"
-            ],
-            "other": [
-                "car-electronics", "tires", "perfumes", "clocks"
-            ]
-        }
+        # Основные корневые категории по запросу пользователя
+        self.targets = [
+            {"slug": "smartphones%20and%20gadgets", "label": "tech"},
+            {"slug": "home%20equipment", "label": "tech"},
+            {"slug": "tv_audio", "label": "tech"},
+            {"slug": "computers", "label": "tech"},
+            {"slug": "furniture", "label": "other"},
+            {"slug": "beauty%20care", "label": "other"},
+            {"slug": "car%20goods", "label": "other"}
+        ]
 
     async def fetch_kaspi_discounts(self) -> list:
         """
-        Парсит последовательно главные категории Kaspi.
+        Глубокий парсинг основных разделов Kaspi (7 главных категорий).
         """
         all_items = []
         
@@ -32,35 +31,38 @@ class ScraperService:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
             
-            # Проходим по категориям
-            for cat_group, slugs in self.categories.items():
-                for slug in slugs:
-                    url = f"https://kaspi.kz/shop/c/{slug}/?q=%3AavailableInZones%3A750000000"
-                    items_from_cat = await self._parse_category_page(context, url, cat_group)
-                    all_items.extend(items_from_cat)
-                    # Небольшая пауза между категориями, чтобы не триггерить защиту
-                    await asyncio.sleep(1)
+            for target in self.targets:
+                url = f"https://kaspi.kz/shop/c/{target['slug']}/?q=%3AavailableInZones%3A750000000"
+                items_from_cat = await self._parse_category_deep(context, url, target['label'])
+                all_items.extend(items_from_cat)
+                await asyncio.sleep(2) # Пауза для стабильности
             
             await browser.close()
             
-        logger.info(f"[ScraperService] Всего по всем категориям Kaspi собрано: {len(all_items)} товаров")
+        logger.info(f"[ScraperService] Глубокий сбор завершен. Всего товаров: {len(all_items)}")
         return all_items
 
-    async def _parse_category_page(self, context, url: str, category_label: str) -> list:
-        """Вспомогательный метод для парсинга одной страницы категории."""
+    async def _parse_category_deep(self, context, url: str, category_label: str) -> list:
+        """Метод для глубокого парсинга (10 скроллов) одной категории."""
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
         
         category_items = []
         try:
-            logger.info(f"[ScraperService] Парсинг категории: {url.split('/')[-2]}")
-            await page.goto(url, wait_until="load", timeout=40000)
+            category_name = url.split('/')[-2].replace('%20', ' ')
+            logger.info(f"[ScraperService] Сафари в раздел: {category_name}...")
             
-            # Быстрый скролл для активации подгрузки
-            await page.evaluate("window.scrollTo(0, 1000)")
-            await asyncio.sleep(2.5)
+            await page.goto(url, wait_until="load", timeout=45000)
+            
+            # РЕЖИМ ГЛУБОКОГО ПРОСМОТРА: 10 скроллов
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await asyncio.sleep(1.2)
+            
+            await asyncio.sleep(2) # Ждем финальную прогрузку
             
             cards = await page.query_selector_all("[class*='card'], .item-card, .p-card")
+            logger.info(f"[ScraperService] В разделе '{category_name}' захвачено {len(cards)} карточек")
             
             for card in cards:
                 try:
@@ -84,7 +86,7 @@ class ScraperService:
                             })
                 except: continue
         except Exception as e:
-            logger.error(f"[ScraperService] Ошибка в категории {url}: {e}")
+            logger.error(f"[ScraperService] Ошибка в разделе {url}: {e}")
         finally:
             await page.close()
             
@@ -96,7 +98,7 @@ class ScraperService:
         return int(digits) if digits else None
 
     async def fetch_price(self, url: str) -> Optional[int]:
-        """Функция для одиночной проверки цены (персональные трекеры)."""
+        """Для персональной следилки."""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
