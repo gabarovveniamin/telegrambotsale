@@ -23,8 +23,7 @@ class ScraperService:
     async def fetch_kaspi_discounts(self) -> list:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-            # Увеличиваем высоту вьюпорта до 3000, чтобы сразу видеть больше
-            context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 2000}, locale="ru-RU")
+            context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 1600}, locale="ru-RU")
             
             all_items = []
             for target in self.targets:
@@ -46,80 +45,83 @@ class ScraperService:
         return final_list
 
     async def _parse_category_smart(self, context, url: str, category_label: str) -> list:
-        """
-        Умный парсинг: собирает не только 'витрину', но и заглядывает в топовые подкатегории.
-        """
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
         
         captured_data = {}
         try:
             category_name = url.split('/')[-2].replace('%20', ' ')
-            logger.info(f"[ScraperService] Исследование раздела: {category_name}")
+            logger.info(f"[ScraperService] Раздел: {category_name}")
             
-            await page.goto(url, wait_until="load", timeout=45000)
-            await asyncio.sleep(3)
+            await page.goto(url, wait_until="load", timeout=40000)
+            await asyncio.sleep(2)
             
-            # --- ШАГ 1: Собираем ссылки на подкатегории (чтобы не парсить только витрину) ---
+            # --- ФИЛЬТРУЕМ ПОДКАТЕГОРИИ (игнорируем мусор из футера) ---
             subcat_links = await page.evaluate("""() => {
-                const links = Array.from(document.querySelectorAll('a[class*="link"], a[class*="category"]'));
+                const links = Array.from(document.querySelectorAll('a'));
+                const forbidden = ['clients', 'partners', 'kaspiguidelink', 'categories', 'guide', 'about', 'news', 'maps', 'city', 'business'];
                 return links
                     .map(a => a.href)
-                    .filter(href => href.includes('/shop/c/') && !href.includes('?'))
-                    .slice(0, 5); // Берем первые 5 подкатегорий из раздела
+                    .filter(href => {
+                        const isShop = href.includes('/shop/c/');
+                        const isNotForbidden = !forbidden.some(word => href.toLowerCase().includes(word));
+                        // Настоящая подкатегория обычно короче и не содержит лишних знаков
+                        return isShop && isNotForbidden && !href.includes('?');
+                    })
+                    .slice(0, 7); // Берем до 7 топовых подкатегорий
             }""")
             
-            # Если нашли подкатегории — идем в них, если нет — парсим текущую страницу
-            links_to_scan = [url] + subcat_links if subcat_links else [url]
+            # Уникализируем ссылки
+            links_to_scan = list(set([url] + subcat_links))
             
             for scan_url in links_to_scan:
-                logger.info(f"[ScraperService] Сканирование: {scan_url.split('/')[-2]}")
-                if scan_url != url:
-                    await page.goto(scan_url, wait_until="load", timeout=30000)
-                    await asyncio.sleep(2)
-                
-                # --- ШАГ 2: Собираем товары со страницы ---
-                # Скроллим 3-4 раза для каждой подкатегории
-                for _ in range(4):
-                    await page.evaluate("window.scrollBy(0, 1000)")
-                    await asyncio.sleep(1.5)
+                cat_slug = scan_url.split('/')[-2]
+                logger.info(f"[ScraperService] -> Ныряем в: {cat_slug}")
+                try:
+                    if scan_url != url:
+                        await page.goto(scan_url, wait_until="load", timeout=30000)
+                        await asyncio.sleep(1.5)
                     
-                    products = await page.evaluate("""() => {
-                        const results = [];
-                        const cards = document.querySelectorAll("[class*='card'], .item-card, .p-card");
-                        cards.forEach(node => {
-                            const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
-                            const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
-                            if (titleEl && priceEl) {
-                                results.push({
-                                    title: titleEl.innerText,
-                                    href: titleEl.getAttribute('href'),
-                                    priceText: priceEl.innerText
-                                });
-                            }
-                        });
-                        return results;
-                    }""")
-                    
-                    for data in products:
-                        if data['href']:
-                            p_id = data['href'].split('/')[-2] if '/' in data['href'] else data['href']
-                            full_id = f"kp_all_{p_id}"
-                            if full_id not in captured_data:
-                                price_val = self._extract_price(data['priceText'])
-                                if price_val:
-                                    captured_data[full_id] = {
-                                        "id": full_id,
-                                        "title": data['title'].strip(),
-                                        "new_price": price_val,
-                                        "old_price": 0,
-                                        "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
-                                        "shop": "Kaspi", "category": category_label
-                                    }
+                    # Сбор данных на ходу (скролл + капча)
+                    for _ in range(4):
+                        await page.evaluate("window.scrollBy(0, 1000)")
+                        await asyncio.sleep(1.2)
+                        
+                        products = await page.evaluate("""() => {
+                            const results = [];
+                            const cards = document.querySelectorAll("[class*='card'], .item-card, .p-card");
+                            cards.forEach(node => {
+                                const titleEl = node.querySelector('a[class*="name"], a[class*="title"], .item-card__name-link');
+                                const priceEl = node.querySelector('[class*="price-once"], [class*="prices-price"], .item-card__prices-price');
+                                if (titleEl && priceEl) {
+                                    results.push({
+                                        title: titleEl.innerText,
+                                        href: titleEl.getAttribute('href'),
+                                        priceText: priceEl.innerText
+                                    });
+                                }
+                            });
+                            return results;
+                        }""")
+                        
+                        for data in products:
+                            if data['href']:
+                                p_id = data['href'].split('/')[-2] if '/' in data['href'] else data['href']
+                                full_id = f"kp_all_{p_id}"
+                                if full_id not in captured_data:
+                                    price_val = self._extract_price(data['priceText'])
+                                    if price_val:
+                                        captured_data[full_id] = {
+                                            "id": full_id, "title": data['title'].strip(),
+                                            "new_price": price_val, "old_price": 0,
+                                            "link": f"https://kaspi.kz{data['href']}" if data['href'].startswith("/") else data['href'],
+                                            "shop": "Kaspi", "category": category_label
+                                        }
+                except: continue
 
-            logger.info(f"[ScraperService] Раздел {category_name} готов. Всего извлечено: {len(captured_data)}")
+            logger.info(f"[ScraperService] Исследование {category_name} завершено. Итого: {len(captured_data)}")
         except Exception as e:
-            logger.error(f"[ScraperService] Ошибка в {url}: {e}")
+            logger.error(f"[ScraperService] Глобальная ошибка в разделе {url}: {e}")
         finally:
             await page.close()
             
@@ -140,7 +142,7 @@ class ScraperService:
             try:
                 await page.goto(url, wait_until="load", timeout=30000)
                 await asyncio.sleep(2)
-                el = await page.query_selector("[class*='price-once'], [class*='prices-price']")
+                el = await page.query_selector(".item-card__prices-price, [class*='price-once'], [class*='prices-price']")
                 return self._extract_price(await el.inner_text()) if el else None
             except: return None
             finally: await browser.close()
