@@ -117,9 +117,11 @@ class ScraperService:
             
             items = []
             try:
-                await page.goto(url, wait_until="networkidle", timeout=60000)
-                # Даем время на отрисовку карточек
-                await asyncio.sleep(3)
+                # Используем domcontentloaded вместо networkidle, чтобы не ждать вечно фоновые скрипты
+                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+                
+                # Даем время на отрисовку карточек (обычно хватает 5 секунд)
+                await asyncio.sleep(5)
                 
                 # Селекторы карточек Kaspi
                 cards = await page.query_selector_all(".item-card")
