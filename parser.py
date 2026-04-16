@@ -405,21 +405,18 @@ class DiscountParser:
             "akyldy-dinamikter", "velosipedy", "otdih-i-sport",
             "jekshn-kamery-accessory", "igrushki", "shini"
         ]
-        import aiohttp
-        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}) as alser_session:
-            for cat in categories:
-                for page in range(1, 3):
-                    url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
-                    r_text = None
-                    try:
-                        async with alser_session.get(url, timeout=20) as r:
-                            if r.status != 200:
-                                logger.warning(f"[Alser] {url} -> HTTP {r.status}")
-                                break
-                            r_text = await r.text()
-                    except Exception as e:
-                        logger.warning(f"[Alser] Exception on {url}: {e}")
-                        break
+        heads = {
+            **self.base_headers,
+            "Referer": "https://alser.kz/",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "*/*",
+        }
+        for cat in categories:
+            for page in range(1, 3):
+                url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
+                r = await safe_request(session, "GET", url, headers=heads)
+                if not r: break
+                content_text = r.text
 
                     if not r_text: break
                 content_text = r_text

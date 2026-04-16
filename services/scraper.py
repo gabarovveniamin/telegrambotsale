@@ -99,24 +99,43 @@ class ScraperService:
                 logger.info(f"[ScraperService] Раздел {category_name} пуст.")
                 return []
 
+            # Даем время на подгрузку меню и фильтров
+            try:
+                await page.wait_for_selector(".tree, .category-filter, .nav-sidebar, .sidebar", timeout=7000)
+            except: pass
+
             # --- Умный поиск подразделов (только в дереве категорий) ---
             subcat_links = await page.evaluate("""() => {
-                const tree = document.querySelector('.tree, .category-filter, .nav-sidebar');
-                if (!tree) return [];
+                const selectors = ['.tree', '.category-filter', '.nav-sidebar', '.sidebar', '.categories-list', '.filter-section'];
+                let container = null;
+                for (const s of selectors) {
+                    const elements = document.querySelectorAll(s);
+                    for (const el of elements) {
+                        if (el.innerText.length > 50) { container = el; break; }
+                    }
+                    if (container) break;
+                }
                 
-                const links = Array.from(tree.querySelectorAll('a[href*="/shop/c/"]'));
-                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'news', 'lifestyle', 'social', 'reviews'];
+                if (!container) return [];
                 
+                const links = Array.from(container.querySelectorAll('a[href*="/shop/c/"]'));
+                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'news', 'lifestyle', 'social', 'reviews', 'whatsapp', 'instagram', 'facebook'];
+                
+                const currentUrl = window.location.href.split('?')[0];
                 return links
                     .map(a => a.href)
                     .filter(href => {
                         if (!href) return false;
+                        const cleanHref = href.split('?')[0];
+                        // Исключаем текущую страницу и те, что короче (родительские)
+                        const isSub = cleanHref.length > currentUrl.length - 5 && cleanHref !== currentUrl;
                         const notBad = !blacklist.some(b => href.includes(b));
-                        // Мы хотим ссылки, которые длиннее текущей (вложенные)
-                        return notBad && href.length > window.location.href.length - 10;
+                        return isSub && notBad;
                     })
-                    .slice(0, 8);
+                    .slice(0, 12);
             }""")
+
+
 
             
             links_to_scan = list(set([l for l in subcat_links if l != url]))
