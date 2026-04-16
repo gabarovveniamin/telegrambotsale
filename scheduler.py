@@ -59,10 +59,12 @@ async def run_monitoring_cycle():
             # Рассылка пользователям (Premium-only), чей порог скидки ниже или равен текущей
             await broadcast_message(
                 text, 
+                item.get("image"),
                 premium_only=True, 
                 min_discount=percent, 
                 category=item.get("category", "tech")
             )
+
             sent_count += 1
             
         logger.info(f"Monitoring cycle finished. Sent {sent_count} notifications to Premium users.")

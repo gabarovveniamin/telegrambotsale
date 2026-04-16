@@ -356,9 +356,11 @@ class DiscountParser:
                             "new_price": fmt_price(current_price),
                             "discount": calc_discount(last_price, current_price),
                             "link": item["link"],
+                            "image": item.get("image"),
                             "shop": "Kaspi",
                             "category": item["category"]
                         })
+
                         logger.info(f"[Kaspi] Скидка: {item['title']} {last_price} -> {current_price}")
             
             # Обновляем (или создаем) запись в базе на будущее

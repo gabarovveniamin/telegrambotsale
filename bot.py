@@ -988,12 +988,13 @@ async def cmd_saledns(message: types.Message):
 # Broadcast helper (used by scheduler)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def broadcast_message(text: str, premium_only: bool = False, min_discount: int = 0, category: str = None):
+async def broadcast_message(text: str, photo: str = None, premium_only: bool = False, min_discount: int = 0, category: str = None):
     """
     Safe mass broadcast respecting Telegram API rate limits.
     premium_only=True — used for premium-exclusive notifications.
     min_discount — only send to users whose threshold is <= this value.
     category — filter users by selected categories (tech, fashion, other).
+    photo — optional image URL.
     """
     if category and min_discount > 0:
         # Фильтруем по категории И порогу скидки
@@ -1009,19 +1010,26 @@ async def broadcast_message(text: str, premium_only: bool = False, min_discount:
 
     for user_id in users:
         try:
-            await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=False)
+            if photo:
+                await bot.send_photo(user_id, photo, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=False)
             count += 1
             await asyncio.sleep(1 / config.MAX_MESSAGES_PER_SECOND)
         except TelegramRetryAfter as e:
             logger.warning(f"Rate limit: waiting {e.retry_after}s")
             await asyncio.sleep(e.retry_after)
-            await bot.send_message(user_id, text, parse_mode="HTML")
+            if photo:
+                await bot.send_photo(user_id, photo, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(user_id, text, parse_mode="HTML")
         except TelegramForbiddenError:
             logger.info(f"User {user_id} blocked the bot.")
         except Exception as e:
             logger.error(f"Broadcast error for {user_id}: {e}")
 
     return count
+
 
 
 from admin_panel import admin_router
