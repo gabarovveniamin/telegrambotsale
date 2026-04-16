@@ -6,7 +6,8 @@ After=network.target
 User=venag
 Group=venag
 WorkingDirectory=/home/venag/telegrambotsale
-ExecStart=/home/venag/telegrambotsale/venv/bin/python main.py
+# Используем xvfb-run для обхода Cloudflare в режиме headed
+ExecStart=/usr/bin/xvfb-run -a /home/venag/telegrambotsale/venv/bin/python main.py
 Restart=always
 RestartSec=5
 EnvironmentFile=/home/venag/telegrambotsale/.env
