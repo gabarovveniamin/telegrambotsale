@@ -418,8 +418,6 @@ class DiscountParser:
                 if not r: break
                 content_text = r.text
 
-                    if not r_text: break
-                content_text = r_text
 
                 try:
                     arg_names_match = re.search(r'function\((.*?)\)', content_text)
