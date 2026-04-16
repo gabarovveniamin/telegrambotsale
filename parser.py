@@ -289,38 +289,31 @@ class DiscountParser:
     #  MECHTA
     # ─────────────────────────────────────────────────────────────────────────
     async def fetch_mechta(self, session: AsyncSession) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-        seen_ids = set()
-        categories = ["smartfony", "noutbuki", "televizory"]
-        for cat in categories:
-            for page in range(1, 9):
-                url = f"https://www.mechta.kz/category/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")
-                r = await safe_request(session, "GET", url, headers=self.base_headers)
-                if not r: break
-                blocks = re.split(r'(?="?id"?\s*:)', r.text)
-                for b in blocks:
-                    if "oldPrice" not in b: continue
-                    try:
-                        title_m = re.search(r'"?(?:name|title)"?\s*:\s*"(.*?)"', b)
-                        if not title_m: continue
-                        title = title_m.group(1)
-                        if "\\u" in title:
-                            try: title = title.encode().decode("unicode_escape")
-                            except: pass
-                        price = float(re.search(r'"?(?:finalPrice|price)"?\s*:\s*(\d+)', b).group(1))
-                        old = float(re.search(r'"?(?:basePrice|oldPrice)"?\s*:\s*(\d+)', b).group(1))
-                        slug = re.search(r'"?slug"?\s*:\s*"(.*?)"', b).group(1)
-                        if old > price:
-                            uid = f"mc_{slug}"
-                            if uid not in seen_ids:
-                                seen_ids.add(uid)
-                                result.append({
-                                    "id": uid, "title": title, "old_price": fmt_price(int(old)),
-                                    "new_price": fmt_price(int(price)), "discount": calc_discount(old, price),
-                                    "link": f"https://www.mechta.kz/product/{slug}", "shop": "Mechta 🔵", "category": "tech",
-                                })
-                    except: continue
-        return result
+        """
+        Парсинг Мечты через ScraperService (Playwright + API).
+        """
+        logger.info("[Mechta] Запуск парсинга через ScraperService...")
+        from services.scraper import scraper_service
+        
+        raw_items = await scraper_service.fetch_mechta_discounts()
+        results = []
+        
+        for item in raw_items:
+            results.append({
+                "id": item["id"],
+                "title": item["title"],
+                "old_price": fmt_price(item["old_price"]),
+                "new_price": fmt_price(item["new_price"]),
+                "discount": calc_discount(item["old_price"], item["new_price"]),
+                "link": item["link"],
+                "image": item.get("image"),
+                "shop": "Mechta 🔵",
+                "category": item["category"]
+            })
+            
+        logger.info(f"[Mechta] Сбор завершен. Найдено скидок: {len(results)}")
+        return results
+
 
     # ─────────────────────────────────────────────────────────────────────────
     #  KASPI
@@ -1184,11 +1177,12 @@ class DiscountParser:
                 self.fetch_sulpak(session),
                 self.fetch_kaspi(session),
                 self.fetch_alser(session),
+                self.fetch_mechta(session),     # ← Мечта теперь в мониторинге!
                 self.fetch_shopkz(session),
                 self.fetch_meloman(session),
                 self.fetch_freedom(session),
                 self.fetch_adidas(session),
-                self.fetch_dns(session),        # ← DNS
+                self.fetch_dns(session),
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             try: it = await self.fetch_intertop(session); results.append(it)
@@ -1218,6 +1212,10 @@ class DiscountParser:
                 elif shop == "Sulpak":
                     el = soup.select_one(".product__price, [data-price]")
                     return self._parse_price_val(el.get("data-price") or el.get_text()) if el else None
+                elif shop == "Mechta":
+                    # Для одного товара используем тот же метод, что и в общем парсере
+                    from services.scraper import scraper_service
+                    return await scraper_service.fetch_price(url)
             except: pass
         return None
 
