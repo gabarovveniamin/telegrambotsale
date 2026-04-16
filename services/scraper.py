@@ -104,7 +104,7 @@ class ScraperService:
 
     async def fetch_mechta_discounts(self) -> list:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, locale="ru-RU")
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
