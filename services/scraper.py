@@ -75,55 +75,68 @@ class ScraperService:
             category_name = re.sub(r'%20', ' ', url.split('/')[-2])
             logger.info(f"[ScraperService] Работаем с разделом: {category_name}")
             
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            await asyncio.sleep(3)
-            
-            # --- ПЫТАЕМСЯ ЗАКРЫТЬ ПОПАПЫ ВЫБОРА ГОРОДА ИЛИ КУКИ ---
+            # Используем 'domcontentloaded' + короткую паузу вместо 'networkidle', 
+            # так как 'networkidle' часто вызывает таймауты из-за трекеров.
             try:
-                city_confirm = await page.query_selector("text='Да, верно'")
-                if city_confirm:
-                    await city_confirm.click()
-                    await asyncio.sleep(1)
-            except: pass
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(5) # Даем время JS отрендерить товары
+            except Exception as e:
+                logger.warning(f"[ScraperService] Таймаут при загрузке {url}, пробуем продолжить: {e}")
+            
+            # --- ПЫТАЕМСЯ ЗАКРЫТЬ ПОПАПЫ (Город, Куки, Подписки) ---
+            for _ in range(2):
+                try:
+                    # 'Да, верно' - подтверждение города Almaty
+                    city_btn = await page.get_by_role("button", name="Да, верно").or_(page.locator(".dialog__close"))
+                    if await city_btn.is_visible():
+                        await city_btn.click()
+                        await asyncio.sleep(1)
+                except: break
 
-            # --- УНИКАЛЬНЫЙ ФИЛЬТР ПОДКАТЕГОРИЙ ---
+            # Проверка на отсутствие товаров ("Ничего не найдено")
+            empty_check = await page.locator("text='Ничего не найдено', .search-result__no-results").is_visible()
+            if empty_check:
+                logger.info(f"[ScraperService] Раздел {category_name} пуст.")
+                return []
+
+            # --- Умный поиск подразделов (только в дереве категорий) ---
             subcat_links = await page.evaluate("""() => {
-                const links = Array.from(document.querySelectorAll('a'));
-                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'mobile', 'pay', 'news', 'about', 'recommendations', 'lifestyle', 'social'];
+                const tree = document.querySelector('.tree, .category-filter, .nav-sidebar');
+                if (!tree) return [];
+                
+                const links = Array.from(tree.querySelectorAll('a[href*="/shop/c/"]'));
+                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'news', 'lifestyle', 'social', 'reviews'];
+                
                 return links
                     .map(a => a.href)
                     .filter(href => {
                         if (!href) return false;
-                        const isNode = href.includes('/shop/c/');
                         const notBad = !blacklist.some(b => href.includes(b));
-                        const isNotMain = !href.endsWith('/shop/c/');
-                        const isClean = !href.includes('&') || href.includes('availableInZones');
-                        return isNode && notBad && isNotMain && isClean;
+                        // Мы хотим ссылки, которые длиннее текущей (вложенные)
+                        return notBad && href.length > window.location.href.length - 10;
                     })
-                    .slice(0, 15);
+                    .slice(0, 8);
             }""")
+
             
             links_to_scan = list(set([l for l in subcat_links if l != url]))
             
             # 1. Парсим текущую категорию основательно
             await self._deep_scroll_and_capture(page, captured_data, category_label)
             
-            # 2. Ныряем в подразделы
-            random.shuffle(links_to_scan)
-            for scan_url in links_to_scan[:4]:
+            # 2. Ныряем в подразделы (топ-3 самых релевантных)
+            for scan_url in links_to_scan[:3]:
                 try:
                     final_scan_url = scan_url
                     if "availableInZones" not in final_scan_url:
                         sep = "&" if "?" in final_scan_url else "?"
                         final_scan_url += f"{sep}q=%3AavailableInZones%3A{self.city_id}"
 
-                    logger.info(f"[ScraperService] -> Сканируем подраздел: {final_scan_url}")
-                    await page.goto(final_scan_url, wait_until="networkidle", timeout=40000)
-                    await asyncio.sleep(2)
+                    logger.info(f"[ScraperService] -> Ныряем в подраздел: {final_scan_url}")
+                    await page.goto(final_scan_url, wait_until="domcontentloaded", timeout=35000)
+                    await asyncio.sleep(4)
                     await self._deep_scroll_and_capture(page, captured_data, category_label)
-                except Exception as e: 
-                    logger.debug(f"Ошибка при сканировании подраздела {scan_url}: {e}")
-                    continue
+                except: continue
 
         except Exception as e:
             logger.error(f"[ScraperService] Критическая ошибка в {url}: {e}")
@@ -134,78 +147,103 @@ class ScraperService:
 
     async def _deep_scroll_and_capture(self, page: Page, captured_data: dict, category_label: str):
         """Интеллектуальный сбор с обработкой 'Показать еще' и извлечением фото"""
-        max_scrolls = 6
-        for i in range(max_scrolls):
+        
+        # Лимит прокруток для одного подраздела
+        for i in range(5):
+            # Проверка на кнопку "Показать еще"
             try:
-                show_more = await page.query_selector(".pagination__load-more, .show-more-button, text='Показать ещё'")
-                if show_more and await show_more.is_visible():
-                    await show_more.click()
-                    await asyncio.sleep(2)
+                for btn_sel in [".pagination__load-more", "text='Показать ещё'", ".show-more"]:
+                    show_more = await page.query_selector(btn_sel)
+                    if show_more and await show_more.is_visible():
+                        await show_more.click()
+                        await asyncio.sleep(2)
             except: pass
 
-            await page.evaluate("window.scrollBy(0, 1500)")
-            await asyncio.sleep(random.uniform(1.2, 2.0))
+            await page.evaluate("window.scrollBy(0, 1200)")
+            await asyncio.sleep(random.uniform(1.0, 1.8))
             
+            # Извлекаем товары
             products = await page.evaluate("""() => {
                 const results = [];
-                const cards = Array.from(document.querySelectorAll('div[data-product-id], .product-card, .item_card'));
-                const links = Array.from(document.querySelectorAll('a[href*="/shop/p/"]'));
+                // Ищем карточки товаров. Kaspi часто меняет классы, поэтому используем несколько селекторов.
+                const cards = Array.from(document.querySelectorAll('.item-card, .product-card, [data-product-id], .search-result-item'));
                 
-                const processLink = (link) => {
-                    const href = link.getAttribute('href');
-                    const title = (link.innerText || "").trim();
-                    if (!title || title.length < 5 || href.includes('reviews')) return;
+                cards.forEach(card => {
+                    const linkEl = card.querySelector('a[href*="/shop/p/"]');
+                    if (!linkEl) return;
 
-                    let container = link;
-                    for(let depth=0; depth<6; depth++) {
-                        if (!container.parentElement) break;
-                        if (container.innerText.includes('₸') && container.offsetHeight > 100) break;
-                        container = container.parentElement;
+                    const href = linkEl.getAttribute('href');
+                    const titleEl = card.querySelector('.item-card__name-link, .product-card__name, [class*="name"]');
+                    const title = (titleEl ? titleEl.innerText : linkEl.innerText).trim();
+                    if (!title || title.length < 3) return;
+
+                    // Поиск цены
+                    let priceText = "";
+                    const priceEl = card.querySelector('.item-card__prices-price, .product-card__price, [class*="price"]');
+                    if (priceEl) {
+                        priceText = priceEl.innerText;
+                    } else {
+                        const allText = card.innerText;
+                        const matched = allText.match(/(\\d[\\d\\s]+\\s*₸)/);
+                        if (matched) priceText = matched[0];
                     }
 
-                    let priceText = "";
-                    const priceMatch = container.innerText.match(/(\\d[\\d\\s]+\\s*₸)/);
-                    if (priceMatch) priceText = priceMatch[0];
-
+                    // Поиск изображения (img или data-src)
                     let imgUrl = "";
-                    const img = container.querySelector('img');
+                    const img = card.querySelector('img');
                     if (img) {
-                        imgUrl = img.getAttribute('src') || img.getAttribute('data-src') || "";
+                        imgUrl = img.getAttribute('src') || img.getAttribute('data-src') || img.currentSrc || "";
                     }
 
                     if (priceText && !results.some(r => r.href === href)) {
                         results.push({ title, href, priceText, imgUrl });
                     }
-                };
+                });
 
-                if (cards.length > 0) {
-                    cards.forEach(card => {
-                        const link = card.querySelector('a[href*="/shop/p/"]');
-                        if (link) processLink(link);
+                
+                // Если карточки не найдены специф. классами, пробуем старый fuzzy метод
+                if (results.length === 0) {
+                    const links = Array.from(document.querySelectorAll('a[href*="/shop/p/"]'));
+                    links.forEach(link => {
+                        const href = link.getAttribute('href');
+                        const title = (link.innerText || "").trim();
+                        if (!title || title.length < 5) return;
+                        
+                        let parent = link.parentElement;
+                        for(let d=0; d<5; d++) {
+                            if (!parent) break;
+                            if (parent.innerText.includes('₸')) {
+                                const priceMatch = parent.innerText.match(/(\\d[\\d\\s]+\\s*₸)/);
+                                if (priceMatch) {
+                                    results.push({ title, href, priceText: priceMatch[0], imgUrl: "" });
+                                    break;
+                                }
+                            }
+                            parent = parent.parentElement;
+                        }
                     });
-                } else {
-                    links.forEach(processLink);
                 }
+
                 return results;
             }""")
             
-            for data in products:
-                href = data['href'].split('?')[0].rstrip('/')
+            for d in products:
+                href = d['href'].split('?')[0].rstrip('/')
                 id_match = re.search(r'(\d+)$', href)
                 p_id = id_match.group(1) if id_match else hashlib.md5(href.encode()).hexdigest()[:10]
                 
                 full_id = f"kp_{p_id}"
                 
                 if full_id not in captured_data:
-                    price_val = self._extract_price(data['priceText'])
+                    price_val = self._extract_price(d['priceText'])
                     if price_val and price_val > 500:
                         captured_data[full_id] = {
                             "id": full_id,
-                            "title": data['title'],
+                            "title": d['title'],
                             "new_price": price_val,
                             "old_price": 0,
                             "link": f"https://kaspi.kz{href}" if href.startswith("/") else href,
-                            "image": data['imgUrl'] if data['imgUrl'] and data['imgUrl'].startswith('http') else None,
+                            "image": d['imgUrl'] if d['imgUrl'] and d['imgUrl'].startswith('http') else None,
                             "shop": "Kaspi",
                             "category": category_label
                         }
@@ -216,26 +254,32 @@ class ScraperService:
         return int(digits) if digits else None
 
     async def fetch_price(self, url: str) -> Optional[int]:
+        """Забор цены для одного товара с улучшенной стабильностью"""
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1280, "height": 800}, locale="ru-RU")
             page = await context.new_page()
             await Stealth().apply_stealth_async(page)
             try:
-                await page.goto(url, wait_until="load", timeout=30000)
-                await asyncio.sleep(2)
-                body_text = await page.inner_text("body")
-                price_match = re.search(r'(\d[\d\s]+\s*₸)', body_text)
-                if price_match:
-                    return self._extract_price(price_match.group(1))
-                price_eval = await page.evaluate("""() => {
-                    const el = document.querySelector('.item__price-once, [class*="price"], .price');
-                    return el ? el.innerText : null;
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(4)
+                
+                # Поиск цены
+                eval_res = await page.evaluate("""() => {
+                    const selectors = ['.item__price-once', '.product-card__price', '.item-card__prices-price', '.price'];
+                    for (const s of selectors) {
+                        const el = document.querySelector(s);
+                        if (el && el.innerText.includes('₸')) return el.innerText;
+                    }
+                    return document.body.innerText.match(/(\\d[\\d\\s]+\\s*₸)/)?.[0] || null;
                 }""")
-                return self._extract_price(price_eval) if price_eval else None
+                return self._extract_price(eval_res) if eval_res else None
             except: return None
             finally: await browser.close()
 
 scraper_service = ScraperService()
+
+
 scraper_service = ScraperService()
+
 
