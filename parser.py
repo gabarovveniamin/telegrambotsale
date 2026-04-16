@@ -406,11 +406,21 @@ class DiscountParser:
             "jekshn-kamery-accessory", "igrushki", "shini"
         ]
         heads = {
-            **self.base_headers,
-            "Referer": "https://alser.kz/",
-            "X-Requested-With": "XMLHttpRequest",
+            "Host": "alser.kz",
             "Accept": "*/*",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://alser.kz/",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Requested-With": "XMLHttpRequest",
         }
+        # Делаем заход на главную, чтобы получить куки
+        await safe_request(session, "GET", "https://alser.kz/", headers=heads)
+        await asyncio.sleep(1)
         for cat in categories:
             for page in range(1, 3):
                 url = f"https://alser.kz/c/{cat}/_payload.js" + (f"?page={page}" if page > 1 else "")

@@ -119,7 +119,7 @@ class ScraperService:
                 if (!container) return [];
                 
                 const links = Array.from(container.querySelectorAll('a[href*="/shop/c/"]'));
-                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'news', 'lifestyle', 'social', 'reviews', 'whatsapp', 'instagram', 'facebook'];
+                const blacklist = ['gos', 'announcements', 'actions', 'mybank', 'travel', 'news', 'lifestyle', 'social', 'reviews', 'whatsapp', 'instagram', 'facebook', 'categories'];
                 
                 const currentUrl = window.location.href.split('?')[0];
                 return links
@@ -127,13 +127,15 @@ class ScraperService:
                     .filter(href => {
                         if (!href) return false;
                         const cleanHref = href.split('?')[0];
-                        // Исключаем текущую страницу и те, что короче (родительские)
-                        const isSub = cleanHref.length > currentUrl.length - 5 && cleanHref !== currentUrl;
+                        // Исключаем текущую страницу, корень и те, что короче
+                        const notSame = cleanHref !== currentUrl && !currentUrl.startsWith(cleanHref);
+                        const isSub = cleanHref.length > currentUrl.length - 5;
                         const notBad = !blacklist.some(b => href.includes(b));
-                        return isSub && notBad;
+                        return isSub && notBad && notSame;
                     })
-                    .slice(0, 12);
+                    .slice(0, 10);
             }""")
+
 
 
 
@@ -196,23 +198,44 @@ class ScraperService:
                     const title = (titleEl ? titleEl.innerText : linkEl.innerText).trim();
                     if (!title || title.length < 3) return;
 
-                    // Поиск цены
+                    // Поиск цены с защитой от рассрочки
                     let priceText = "";
-                    const priceEl = card.querySelector('.item-card__prices-price, .product-card__price, [class*="price"]');
-                    if (priceEl) {
-                        priceText = priceEl.innerText;
-                    } else {
-                        const allText = card.innerText;
-                        const matched = allText.match(/(\\d[\\d\\s]+\\s*₸)/);
-                        if (matched) priceText = matched[0];
+                    const mainPriceEl = card.querySelector('.item-card__prices-price');
+                    if (mainPriceEl && !mainPriceEl.innerText.includes('мес')) {
+                        priceText = mainPriceEl.innerText;
+                    } 
+                    
+                    if (!priceText) {
+                        const priceEl = card.querySelector('.product-card__price, [class*="price"]');
+                        if (priceEl && !priceEl.innerText.includes('мес')) {
+                            priceText = priceEl.innerText;
+                        } else {
+                            const allText = card.innerText;
+                            const matches = allText.match(/(\d[\d\s]*₸)/g);
+                            if (matches) {
+                                for (const m of matches) {
+                                    const idx = allText.indexOf(m);
+                                    const ctx = allText.substring(idx, idx + 20).toLowerCase();
+                                    if (!ctx.includes('мес') && !ctx.includes('расср')) {
+                                        priceText = m;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    // Поиск изображения (img или data-src)
+                    // Поиск изображения (img или data-src/data-original)
                     let imgUrl = "";
                     const img = card.querySelector('img');
                     if (img) {
-                        imgUrl = img.getAttribute('src') || img.getAttribute('data-src') || img.currentSrc || "";
+                        imgUrl = img.getAttribute('src') || 
+                                 img.getAttribute('data-src') || 
+                                 img.getAttribute('data-original') || 
+                                 img.getAttribute('content') ||
+                                 img.currentSrc || "";
                     }
+
 
                     if (priceText && !results.some(r => r.href === href)) {
                         results.push({ title, href, priceText, imgUrl });
@@ -255,7 +278,7 @@ class ScraperService:
                 
                 if full_id not in captured_data:
                     price_val = self._extract_price(d['priceText'])
-                    if price_val and price_val > 500:
+                    if price_val and price_val > 10:
                         captured_data[full_id] = {
                             "id": full_id,
                             "title": d['title'],
@@ -269,6 +292,11 @@ class ScraperService:
 
     def _extract_price(self, text: str) -> Optional[int]:
         if not text: return None
+        # Если в тексте есть маркеры рассрочки, это не основная цена
+        lower_text = text.lower()
+        if "мес" in lower_text or "расср" in lower_text:
+            return None
+            
         digits = re.sub(r"[^\d]", "", text)
         return int(digits) if digits else None
 
@@ -283,14 +311,27 @@ class ScraperService:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(4)
                 
-                # Поиск цены
+                # Поиск цены с защитой от рассрочки
                 eval_res = await page.evaluate("""() => {
                     const selectors = ['.item__price-once', '.product-card__price', '.item-card__prices-price', '.price'];
                     for (const s of selectors) {
-                        const el = document.querySelector(s);
-                        if (el && el.innerText.includes('₸')) return el.innerText;
+                        const elements = document.querySelectorAll(s);
+                        for (const el of elements) {
+                            if (el && el.innerText.includes('₸') && !el.innerText.includes('мес')) {
+                                return el.innerText;
+                            }
+                        }
                     }
-                    return document.body.innerText.match(/(\\d[\\d\\s]+\\s*₸)/)?.[0] || null;
+                    const bodyText = document.body.innerText;
+                    const matches = bodyText.match(/(\d[\d\s]*₸)/g);
+                    if (matches) {
+                        for (const m of matches) {
+                            const idx = bodyText.indexOf(m);
+                            const ctx = bodyText.substring(idx, idx + 20).toLowerCase();
+                            if (!ctx.includes('мес') && !ctx.includes('расср')) return m;
+                        }
+                    }
+                    return null;
                 }""")
                 return self._extract_price(eval_res) if eval_res else None
             except: return None
