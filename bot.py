@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import config
 from database import db
+from services.cryptopay_service import cryptopay_service
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,10 @@ def build_premium_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(
             text=f"⭐️ Купить за {PREMIUM_PRICE_STARS} Stars ({PREMIUM_DAYS} дней)",
             callback_data="buy_premium"
+        )],
+        [InlineKeyboardButton(
+            text=f"💎 Купить за TON (CryptoPay)",
+            callback_data="buy_premium_ton"
         )],
         [InlineKeyboardButton(text="🔗 Получить бесплатно", callback_data="menu_referral")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
@@ -452,6 +457,76 @@ async def cmd_buy(message: types.Message):
 async def cb_buy_premium(callback: types.CallbackQuery):
     await _send_invoice(callback.message.chat.id, callback.from_user.id)
     await callback.answer()
+
+
+@router.callback_query(F.data == "buy_premium_ton")
+async def cb_buy_premium_ton(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    # 1. Рассчитываем цену в TON динамически (150 звезд в эквиваленте)
+    ton_amount = await cryptopay_service.get_ton_price_for_stars(PREMIUM_PRICE_STARS)
+    
+    # 2. Создаем инвойс
+    try:
+        invoice = await cryptopay_service.create_invoice(user_id, ton_amount, PREMIUM_DAYS)
+        
+        # 3. Отправляем пользователю
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Оплатить в TON", url=invoice.pay_url)],
+            [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_ton_{invoice.invoice_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
+        ])
+        
+        await callback.message.edit_text(
+            f"💎 <b>Оплата через TON (CryptoPay)</b>\n\n"
+            f"Вы покупаете Premium на <b>{PREMIUM_DAYS} дней</b>.\n"
+            f"Сумма к оплате: <b>{ton_amount} TON</b>\n\n"
+            f"<i>Курс обновляется динамически в зависимости от цены TON к USD.</i>\n\n"
+            f"Нажмите кнопку ниже, чтобы перейти к оплате через @CryptoBot:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Error creating TON invoice: {e}")
+        await callback.answer("❌ Ошибка при создании счета. Попробуйте позже.", show_alert=True)
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("check_ton_"))
+async def cb_check_ton_payment(callback: types.CallbackQuery):
+    invoice_id = int(callback.data.replace("check_ton_", ""))
+    invoice = await cryptopay_service.check_invoice(invoice_id)
+    
+    if not invoice:
+        await callback.answer("❌ Счет не найден.", show_alert=True)
+        return
+
+    if invoice.status == "paid":
+        # Успешная оплата
+        user_id = callback.from_user.id
+        # Активируем подписку
+        await db.activate_subscription(user_id, days=PREMIUM_DAYS, stars_paid=0)
+        
+        # Реферальный бонус
+        referrer_id = await db.get_referrer_of(user_id)
+        if referrer_id:
+            await db.reward_referral(referrer_id, user_id, bonus_days=REFERRAL_BONUS_DAYS)
+            try:
+                await bot.send_message(referrer_id, f"🎉 Ваш реферал оплатил Premium! Вам начислено +{REFERRAL_BONUS_DAYS} дней.")
+            except: pass
+
+        await callback.message.edit_text(
+            f"🎉 <b>Оплата подтверждена!</b>\n\n"
+            f"📅 Premium активирован на <b>{PREMIUM_DAYS} дней</b>.\n"
+            f"Спасибо за поддержку!",
+            reply_markup=build_main_menu(user_id),
+            parse_mode="HTML"
+        )
+    elif invoice.status == "expired":
+        await callback.message.edit_text("❌ Срок действия счета истек. Попробуйте еще раз.")
+    else:
+        await callback.answer("⏳ Оплата еще не получена. Если вы оплатили, подождите пару минут.", show_alert=True)
 
 
 async def _send_invoice(chat_id: int, user_id: int):

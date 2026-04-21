@@ -8,8 +8,9 @@ load_dotenv()
 @dataclass
 class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-
     BOT_USERNAME: str = os.getenv("BOT_USERNAME", "salesalesa1e_bot")
+    CRYPTOPAY_TOKEN: str = os.getenv("CRYPTOPAY_TOKEN", "")
+
 
 
     ADMIN_IDS: List[int] = field(default_factory=lambda: [

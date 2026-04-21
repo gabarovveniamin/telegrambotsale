@@ -45,6 +45,8 @@ async def main():
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
     finally:
+        from services.cryptopay_service import cryptopay_service
+        await cryptopay_service.close()
         await db.disconnect()
         logger.info("Bot stopped.")
 
