@@ -22,7 +22,7 @@ class VerifyRequest(BaseModel):
     user_id: int
     boc: str
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/pay", response_class=HTMLResponse)
 async def read_item(request: Request):
     with open("tma/index.html", "r", encoding="utf-8") as f:
         content = f.read()

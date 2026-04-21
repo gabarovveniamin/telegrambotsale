@@ -81,7 +81,7 @@ def build_premium_kb() -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton(
             text="👛 Оплатить кошельком (TON Connect)",
-            web_app=WebAppInfo(url="https://79.76.47.252.nip.io")
+            web_app=WebAppInfo(url="https://79.76.47.252.nip.io/pay")
         )],
         [InlineKeyboardButton(text="🔗 Получить бесплатно", callback_data="menu_referral")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
