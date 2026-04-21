@@ -553,16 +553,17 @@ async def cb_buy_premium_ton_direct(callback: types.CallbackQuery):
     # Стандартная ссылка (Tonkeeper, Bitget, и др.)
     tonkeeper_link = f"https://app.tonkeeper.com/transfer/{wallet}?amount={nano_amount}&text={memo}"
     
-    # MyTonWallet (специфичный протокол)
-    mytonwallet_link = f"mytonwallet://transfer/{wallet}?amount={nano_amount}&text={memo}"
+    # MyTonWallet (используем универсальный протокол ton://)
+    # Telegram разрешает протокол ton://, большинство кошельков его подхватят
+    universal_link = f"ton://transfer/{wallet}?amount={nano_amount}&text={memo}"
     
     # Telegram Wallet (@wallet)
     telegram_wallet_link = f"https://t.me/wallet?startapp=transfer&address={wallet}&amount={nano_amount}&memo={memo}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 Tonkeeper", url=tonkeeper_link)],
-        [InlineKeyboardButton(text="👛 MyTonWallet", url=mytonwallet_link)],
-        [InlineKeyboardButton(text="🤖 Wallet (Telegram)", url=telegram_wallet_link)],
+        [InlineKeyboardButton(text="👛 Другие кошельки (TON)", url=universal_link)],
+        [InlineKeyboardButton(text="🤖 Wallet (@wallet)", url=telegram_wallet_link)],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
     ])
 
