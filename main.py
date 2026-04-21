@@ -33,10 +33,10 @@ async def main():
     try:
         from webapp import app
         import uvicorn
-        config_uvicorn = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="error")
+        config_uvicorn = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="error")
         server = uvicorn.Server(config_uvicorn)
         asyncio.create_task(server.serve())
-        logger.info("Web server (Mini App) started on port 8000.")
+        logger.info("Web server (Mini App) started on port 8001.")
     except Exception as e:
         logger.error(f"Web server error: {e}")
 

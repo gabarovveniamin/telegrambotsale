@@ -30,13 +30,13 @@ async def read_item(request: Request):
     wallet = os.getenv("MY_TON_WALLET", "UQA_PLACEHOLDER")
     return content.replace("YOUR_WALLET_ADDRESS_HERE", wallet)
 
-@app.get("/api/get-price")
+@app.get("/tma_api/get-price")
 async def get_price():
     # Use existing service to get dynamic price
     price = await cryptopay_service.get_ton_price_for_stars(150) # 150 stars as baseline
     return {"price": price}
 
-@app.post("/api/verify-payment")
+@app.post("/tma_api/verify-payment")
 async def verify_payment(data: VerifyRequest):
     logger.info(f"Verifying payment for user {data.user_id}")
     

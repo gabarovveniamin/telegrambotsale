@@ -119,7 +119,7 @@
 
         async function fetchPrice() {
             try {
-                const response = await fetch('/api/get-price');
+                const response = await fetch('/tma_api/get-price');
                 const data = await response.json();
                 amountTon = data.price;
                 document.getElementById('price-display').innerText = `${amountTon} TON`;
@@ -175,7 +175,7 @@
                 statusDiv.innerText = "Транзакция отправлена! Проверяем блокчейн...";
                 
                 // Отправляем хеш на бэкенд для проверки
-                const verifyResponse = await fetch('/api/verify-payment', {
+                const verifyResponse = await fetch('/tma_api/verify-payment', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
