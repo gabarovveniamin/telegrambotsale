@@ -80,8 +80,8 @@ def build_premium_kb() -> InlineKeyboardMarkup:
             callback_data="buy_premium_ton"
         )],
         [InlineKeyboardButton(
-            text="👛 Оплатить кошельком (TON Connect)",
-            web_app=WebAppInfo(url="https://79.76.47.252.nip.io/pay")
+            text="👛 Оплатить кошельком (Direct TON)",
+            callback_data="buy_premium_ton_direct"
         )],
         [InlineKeyboardButton(text="🔗 Получить бесплатно", callback_data="menu_referral")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
@@ -531,6 +531,42 @@ async def cb_check_ton_payment(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ Срок действия счета истек. Попробуйте еще раз.")
     else:
         await callback.answer("⏳ Оплата еще не получена. Если вы оплатили, подождите пару минут.", show_alert=True)
+
+
+@router.callback_query(F.data == "buy_premium_ton_direct")
+async def cb_buy_premium_ton_direct(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    # 1. Считаем цену
+    ton_amount = await cryptopay_service.get_ton_price_for_stars(PREMIUM_PRICE_STARS)
+    wallet = os.getenv("MY_TON_WALLET")
+    
+    if not wallet:
+        await callback.answer("❌ Кошелек не настроен на сервере.", show_alert=True)
+        return
+
+    # 2. Генерируем Deep Link (ton://transfer/<address>?amount=<nano>&text=<memo>)
+    nano_amount = int(ton_amount * 1000000000)
+    memo = f"premium_{user_id}"
+    
+    # Ссылка для кошельков
+    pay_link = f"ton://transfer/{wallet}?amount={nano_amount}&text={memo}"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 Оплатить (Открыть Tonkeeper)", url=pay_link)],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
+    ])
+
+    await callback.message.edit_text(
+        f"💎 <b>Оплата прямым переводом TON</b>\n\n"
+        f"Сумма: <b>{ton_amount} TON</b>\n"
+        f"Назначение: <code>{memo}</code>\n\n"
+        f"Нажми кнопку ниже, чтобы открыть кошелек с заполненными данными. "
+        f"После оплаты Premium активируется автоматически в течение 1-2 минут.",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await callback.answer()
 
 
 async def _send_invoice(chat_id: int, user_id: int):

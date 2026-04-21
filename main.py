@@ -29,16 +29,13 @@ async def main():
     except Exception as e:
         logger.error(f"Scheduler error: {e}")
 
-    # ── Start Web Server (Mini App) ────────────────────────────────────────────
+    # ── Start TON Payment Poller (Background) ──────────────────────────────────
     try:
-        from webapp import app
-        import uvicorn
-        config_uvicorn = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="error")
-        server = uvicorn.Server(config_uvicorn)
-        asyncio.create_task(server.serve())
-        logger.info("Web server (Mini App) started on port 8001.")
+        from services.ton_poller import ton_poller_task
+        asyncio.create_task(ton_poller_task())
+        logger.info("TON Payment Poller started.")
     except Exception as e:
-        logger.error(f"Web server error: {e}")
+        logger.error(f"TON Poller error: {e}")
 
     # ── Polling with auto-reconnect ────────────────────────────────────────────
     retry_delay = 5
