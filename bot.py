@@ -546,24 +546,31 @@ async def cb_buy_premium_ton_direct(callback: types.CallbackQuery):
         await callback.answer("❌ Кошелек не настроен на сервере.", show_alert=True)
         return
 
-    # 2. Генерируем Deep Link (ton://transfer/<address>?amount=<nano>&text=<memo>)
+    # 2. Генерируем ссылки
     nano_amount = int(ton_amount * 1000000000)
     memo = f"premium_{user_id}"
     
-    # Ссылка для кошельков
-    pay_link = f"ton://transfer/{wallet}?amount={nano_amount}&text={memo}"
+    # Стандартная ссылка (Tonkeeper, Bitget, и др.)
+    tonkeeper_link = f"https://app.tonkeeper.com/transfer/{wallet}?amount={nano_amount}&text={memo}"
+    
+    # MyTonWallet (специфичный протокол)
+    mytonwallet_link = f"mytonwallet://transfer/{wallet}?amount={nano_amount}&text={memo}"
+    
+    # Telegram Wallet (@wallet)
+    telegram_wallet_link = f"https://t.me/wallet?startapp=transfer&address={wallet}&amount={nano_amount}&memo={memo}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Оплатить (Открыть Tonkeeper)", url=pay_link)],
+        [InlineKeyboardButton(text="💎 Tonkeeper", url=tonkeeper_link)],
+        [InlineKeyboardButton(text="👛 MyTonWallet", url=mytonwallet_link)],
+        [InlineKeyboardButton(text="🤖 Wallet (Telegram)", url=telegram_wallet_link)],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
     ])
 
     await callback.message.edit_text(
-        f"💎 <b>Оплата прямым переводом TON</b>\n\n"
+        f"💎 <b>Оплата через TON</b>\n\n"
         f"Сумма: <b>{ton_amount} TON</b>\n"
         f"Назначение: <code>{memo}</code>\n\n"
-        f"Нажми кнопку ниже, чтобы открыть кошелек с заполненными данными. "
-        f"После оплаты Premium активируется автоматически в течение 1-2 минут.",
+        f"Выберите кошелек для оплаты. Данные (адрес и сумма) заполнятся автоматически.",
         reply_markup=kb,
         parse_mode="HTML"
     )
