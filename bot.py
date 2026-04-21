@@ -472,7 +472,7 @@ async def cb_buy_premium_ton(callback: types.CallbackQuery):
         
         # 3. Отправляем пользователю
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Оплатить в TON", url=invoice.pay_url)],
+            [InlineKeyboardButton(text="💎 Оплатить в TON", url=invoice.bot_invoice_url)],
             [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_ton_{invoice.invoice_id}")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
         ])
