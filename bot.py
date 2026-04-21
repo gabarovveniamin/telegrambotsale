@@ -79,6 +79,10 @@ def build_premium_kb() -> InlineKeyboardMarkup:
             text=f"💎 Купить за TON (CryptoPay)",
             callback_data="buy_premium_ton"
         )],
+        [InlineKeyboardButton(
+            text="👛 Оплатить кошельком (TON Connect)",
+            web_app=WebAppInfo(url="https://79.76.47.252.nip.io")
+        )],
         [InlineKeyboardButton(text="🔗 Получить бесплатно", callback_data="menu_referral")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
     ])
@@ -472,7 +476,7 @@ async def cb_buy_premium_ton(callback: types.CallbackQuery):
         
         # 3. Отправляем пользователю
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Оплатить в TON", url=invoice.bot_invoice_url)],
+            [InlineKeyboardButton(text="💎 Оплатить в TON", url=invoice.mini_app_invoice_url)],
             [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_ton_{invoice.invoice_id}")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_premium")]
         ])

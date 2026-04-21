@@ -54,6 +54,15 @@ class Database:
                 )
             """)
             # Migration: add columns
+            # Таблица для отслеживания блокчейн-транзакций (защита от повторов)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS processed_transactions (
+                    tx_hash TEXT PRIMARY KEY,
+                    user_id BIGINT,
+                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
             await conn.execute("""
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT
             """)
@@ -598,5 +607,13 @@ class Database:
             "referrals": referral_count,
         }
 
+
+    # Payments (TON Connect)
+    async def is_transaction_used(self, tx_hash: str) -> bool:
+        row = await self.pool.fetchrow('SELECT 1 FROM processed_transactions WHERE tx_hash = $1', tx_hash)
+        return row is not None
+
+    async def save_used_transaction(self, tx_hash: str, user_id: int):
+        await self.pool.execute('INSERT INTO processed_transactions (tx_hash, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', tx_hash, user_id)
 
 db = Database()
