@@ -13,13 +13,13 @@ class ScraperService:
     def __init__(self):
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         self.targets = [
-            {"slug": "smartphones%20and%20gadgets", "label": "tech"},
-            {"slug": "home%20equipment", "label": "tech"},
-            {"slug": "tv_audio", "label": "tech"},
+            {"slug": "smartphones", "label": "tech"},
+            {"slug": "home-appliances", "label": "tech"},
+            {"slug": "tv", "label": "tech"},
             {"slug": "computers", "label": "tech"},
             {"slug": "furniture", "label": "other"},
-            {"slug": "beauty%20care", "label": "other"},
-            {"slug": "car%20goods", "label": "other"},
+            {"slug": "beauty-care", "label": "other"},
+            {"slug": "car-goods", "label": "other"},
             {"slug": "sport-goods", "label": "other"}
         ]
         self.city_id = "750000000"  # Almaty
@@ -34,6 +34,7 @@ class ScraperService:
 
     async def fetch_kaspi_discounts(self) -> list:
         async with async_playwright() as p:
+            # Headless mode should be True for production/servers unless using xvfb
             browser = await p.chromium.launch(headless=False, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1920, "height": 1080}, locale="ru-RU", timezone_id="Asia/Almaty")
             all_items = []
@@ -75,8 +76,11 @@ class ScraperService:
                     const linkEl = card.querySelector('a[href*="/shop/p/"]');
                     if (!linkEl) return;
                     const priceEl = card.querySelector('.item-card__prices-price, .product-card__price');
+                    const productId = card.getAttribute('data-product-id');
+                    
                     if (priceEl && !priceEl.innerText.includes('мес')) {
                         results.push({ 
+                            id: productId,
                             title: linkEl.innerText.trim(), 
                             href: linkEl.getAttribute('href'), 
                             priceText: priceEl.innerText,
@@ -87,9 +91,14 @@ class ScraperService:
                 return results;
             }""")
             for d in products:
-                p_id = re.search(r'(\d+)$', d['href']).group(1) if re.search(r'(\d+)$', d['href']) else "0"
+                # Если в JS не нашли data-product-id, пытаемся вытащить из ссылки
+                p_id = d.get('id')
+                if not p_id:
+                    m = re.search(r'(\d+)/?$', d['href'])
+                    p_id = m.group(1) if m else "0"
+                
                 full_id = f"kp_{p_id}"
-                if full_id not in captured:
+                if p_id != "0" and full_id not in captured:
                     val = self._extract_price(d['priceText'])
                     if val:
                         captured[full_id] = {
@@ -97,9 +106,32 @@ class ScraperService:
                             "link": f"https://kaspi.kz{d['href']}", "image": d['imgUrl'], "shop": "Kaspi", "category": label
                         }
 
+    async def fetch_price(self, url: str) -> Optional[int]:
+        """Для точечной следилки: получает цену одного товара"""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False, args=["--no-sandbox"])
+            context = await browser.new_context(user_agent=self.user_agent)
+            page = await context.new_page()
+            await Stealth().apply_stealth_async(page)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(3)
+                # Ищем цену через мета-теги (самый надежный способ для одного товара)
+                price_text = await page.evaluate('() => document.querySelector("meta[property=\\"product:price:amount\\"]")?.content')
+                if not price_text:
+                    # Запасной вариант через селектор
+                    price_text = await page.evaluate('() => document.querySelector(".item-card__prices-price, .product-card__price")?.innerText')
+                
+                return self._extract_price(price_text)
+            except Exception as e:
+                logger.error(f"[ScraperService] fetch_price error: {e}")
+                return None
+            finally:
+                await browser.close()
+
     def _extract_price(self, text: str) -> Optional[int]:
         if not text or "мес" in text.lower(): return None
-        digits = re.sub(r"[^\d]", "", text)
+        digits = re.sub(r"[^\d]", "", str(text))
         return int(digits) if digits else None
 
     async def fetch_mechta_discounts(self) -> list:
