@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -10,18 +9,10 @@ pip-log.txt
 pip-delete-this-directory.txt
 .venv/
 .env
-
-# Logs
 *.log
-
-# Databases (if local)
 *.db
 *.sqlite
-
-# IDE
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db

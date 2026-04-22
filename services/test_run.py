@@ -1,6 +1,5 @@
 import asyncio
 from scraper import scraper_service
-
 async def main():
     urls = [
         "https://kaspi.kz/shop/p/apple-iphone-14-128gb-nanosim-esim-chernyi-106363023/?c=750000000",
@@ -11,5 +10,4 @@ async def main():
         print(f"Testing {url}...")
         price = await scraper_service.fetch_price(url)
         print(f"Price: {price}")
-
 asyncio.run(main())

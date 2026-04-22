@@ -6,26 +6,18 @@ import urllib.parse
 from typing import List, Dict, Any, Optional
 import json
 import time
-
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from services.scraper import scraper_service
-
 logger = logging.getLogger(__name__)
-
-# ─── Константы городов ────────────────────────────────────────────────────────
-CITY_ID_TECHNODOM = "5f5f1e3b4c8a49e692fefd70"  # Алматы
-CITY_ID_SULPAK    = "1"                           # Алматы
+CITY_ID_TECHNODOM = "5f5f1e3b4c8a49e692fefd70"
+CITY_ID_SULPAK    = "1"
 CITY_SLUG_MECHTA  = "almaty"
-CITY_ID_KASPI     = "750000000"                   # Алматы
-
-# ─── Настройки ────────────────────────────────────────────────────────────────
+CITY_ID_KASPI     = "750000000"
 MAX_PAGES      = 10
 PAGE_SIZE      = 30
 RETRY_COUNT    = 3
 RETRY_DELAY    = 2.0
-
-
 def fmt_price(value) -> str:
     if value is None:
         return "—"
@@ -38,8 +30,6 @@ def fmt_price(value) -> str:
         return f"{formatted} ₸"
     except Exception:
         return str(value) + " ₸"
-
-
 def calc_discount(old: Any, new: Any) -> int:
     try:
         if not old or not new: return 0
@@ -50,8 +40,6 @@ def calc_discount(old: Any, new: Any) -> int:
     except Exception:
         pass
     return 0
-
-
 async def safe_request(
     session: AsyncSession,
     method: str,
@@ -74,25 +62,19 @@ async def safe_request(
                 r = await session.get(
                     url, headers=headers, params=params, timeout=timeout
                 )
-
             if r.status_code == 200:
                 return r
             elif r.status_code >= 400:
-                # Логируем ошибок статус, но не повторяем - это не временная ошибка
                 logger.warning(f"[{url}] HTTP {r.status_code}, прекращаем повторы")
                 return None
             else:
                 logger.warning(f"[attempt {attempt}/{RETRY_COUNT}] {url} → HTTP {r.status_code}")
         except Exception as e:
             logger.warning(f"[attempt {attempt}/{RETRY_COUNT}] {url} → {e}")
-
         if attempt < RETRY_COUNT:
             await asyncio.sleep(RETRY_DELAY)
-
     logger.error(f"Все {RETRY_COUNT} попытки исчерпаны: {url}")
     return None
-
-
 class DiscountParser:
     def __init__(self):
         self.impersonate = "chrome124"
@@ -110,10 +92,6 @@ class DiscountParser:
             "Upgrade-Insecure-Requests": "1",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  TECHNODOM
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_technodom_category(self, session: AsyncSession, query: str, seen: set) -> List[Dict[str, Any]]:
         url = "https://api.technodom.kz/katalog/api/v2/products/search"
         headers = {
@@ -126,7 +104,6 @@ class DiscountParser:
             "Referer": "https://www.technodom.kz/",
         }
         results = []
-
         for page in range(1, MAX_PAGES + 1):
             payload = {
                 "categories": [""],
@@ -183,7 +160,6 @@ class DiscountParser:
                 break
             await asyncio.sleep(0.3)
         return results
-
     async def fetch_technodom(self, session: AsyncSession) -> List[Dict[str, Any]]:
         queries = [
             "смартфон", "ноутбук", "телевизор", "планшет", "наушники",
@@ -193,11 +169,9 @@ class DiscountParser:
             "игровая приставка", "монитор", "видеокарта", "процессор",
             "фотоаппарат", "колонка", "электросамокат", "робот пылесос",
         ]
-
         all_products = []
         seen = set()
         semaphore = asyncio.Semaphore(5)
-
         async def fetch_with_sem(q):
             async with semaphore:
                 try:
@@ -208,20 +182,13 @@ class DiscountParser:
                 except Exception as e:
                     logger.error(f"[Technodom] Ошибка '{q}': {e}")
                     return []
-
         tasks = [fetch_with_sem(q) for q in queries]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
         for res in results:
             if isinstance(res, list):
                 all_products.extend(res)
-
         logger.info(f"[Technodom] Всего собрано: {len(all_products)} товаров со скидками")
         return all_products
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  SULPAK
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_category_sulpak(self, session: AsyncSession, category: str, seen_ids: set) -> List[Dict[str, Any]]:
         result = []
         for page in range(1, 11):
@@ -251,7 +218,6 @@ class DiscountParser:
             if len(cards) < 10: break
             await asyncio.sleep(0.3)
         return result
-
     async def fetch_sulpak(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         seen_ids = set()
@@ -284,20 +250,14 @@ class DiscountParser:
         for cat in ["smartfoniy", "noutbuki", "led_oled_televizoriy", "holodilniki", "stiralniye_mashiniy", "planshetiy"]:
             result.extend(await self.fetch_category_sulpak(session, cat, seen_ids))
         return result
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  MECHTA
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_mechta(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
         Парсинг Мечты через ScraperService (Playwright + API).
         """
         logger.info("[Mechta] Запуск парсинга через ScraperService...")
         from services.scraper import scraper_service
-        
         raw_items = await scraper_service.fetch_mechta_discounts()
         results = []
-        
         for item in raw_items:
             results.append({
                 "id": item["id"],
@@ -310,14 +270,8 @@ class DiscountParser:
                 "shop": "Mechta 🔵",
                 "category": item["category"]
             })
-            
         logger.info(f"[Mechta] Сбор завершен. Найдено скидок: {len(results)}")
         return results
-
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  KASPI
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_kaspi(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
         Умный мониторинг цен Kaspi: сравнивает текущие цены с историей в БД.
@@ -326,21 +280,14 @@ class DiscountParser:
         logger.info("[Kaspi] Запуск глобального мониторинга цен...")
         from services.scraper import scraper_service
         from database import db
-        
         raw_items = await scraper_service.fetch_kaspi_discounts()
         results = []
-        
         for item in raw_items:
             product_id = item["id"]
             current_price = int(item["new_price"])
-            
-            # Получаем последнюю известную цену из нашей базы
             last_price = await db.get_product_price(product_id)
-            
             if last_price:
-                # Если текущая цена НИЖЕ той, что мы знали — значит это скидка!
                 if current_price < last_price:
-                    # Порог в 2%, чтобы не спамить при изменении цены на 10 тенге
                     if (last_price - current_price) / last_price >= 0.02:
                         results.append({
                             "id": product_id,
@@ -353,29 +300,19 @@ class DiscountParser:
                             "shop": "Kaspi",
                             "category": item["category"]
                         })
-
                         logger.info(f"[Kaspi] Скидка: {item['title']} {last_price} -> {current_price}")
-            
-            # Обновляем (или создаем) запись в базе на будущее
             await db.update_product_price(product_id, current_price)
-            
         logger.info(f"[Kaspi] Обработка завершена. Найдено новых скидок: {len(results)}")
         return results
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  ALSER
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result = []
         seen_ids = set()
-
         def unescape(s):
             if not s or "\\" not in s: return s
             try:
                 return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
             except:
                 return s
-
         categories = [
             "smartfony", "planshety", "umnye-chasy", "fitnes-braslety", "baby-watch",
             "naushniki-dlja-smartfonov", "portativnoe-audio", "aksessuary-dlja-smartfonov",
@@ -411,7 +348,6 @@ class DiscountParser:
             "Sec-Fetch-Site": "same-origin",
             "X-Requested-With": "XMLHttpRequest",
         }
-        # Делаем заход на главную, чтобы получить куки
         await safe_request(session, "GET", "https://alser.kz/", headers=heads)
         await asyncio.sleep(1)
         for cat in categories:
@@ -420,8 +356,6 @@ class DiscountParser:
                 r = await safe_request(session, "GET", url, headers=heads)
                 if not r: break
                 content_text = r.text
-
-
                 try:
                     arg_names_match = re.search(r'function\((.*?)\)', content_text)
                     arg_values_match = re.search(r'}\((.*)\)\)\s*$', content_text)
@@ -436,7 +370,6 @@ class DiscountParser:
                         except: pass
                 except:
                     val_map = {}
-
                 def get_val(raw):
                     if not raw: return None
                     raw = raw.strip()
@@ -446,7 +379,6 @@ class DiscountParser:
                         return val_map[raw]
                     try: return float(raw)
                     except: return raw
-
                 blocks = re.split(r'\{\s*"?id"?\s*:', content_text)
                 for b in blocks:
                     if "oldPrice" not in b: continue
@@ -474,10 +406,6 @@ class DiscountParser:
                     except: continue
             await asyncio.sleep(1)
         return result
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  SHOP.KZ
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_shopkz(self, session: AsyncSession) -> List[Dict[str, Any]]:
         r = await safe_request(session, "GET", "https://shop.kz/bitrix/catalog_export/yandex.php")
         if not r: return []
@@ -499,10 +427,6 @@ class DiscountParser:
                         })
             return res
         except: return []
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  MELOMAN (Loyalty API)
-    # ─────────────────────────────────────────────────────────────────────────
     def _meloman_extract_price(self, html: str) -> Optional[int]:
         if not html or html == "-": return None
         m = re.search(r'data-price-amount=["\']?(\d+)["\']?', html)
@@ -511,7 +435,6 @@ class DiscountParser:
         el = soup.find(attrs={"data-price-amount": True})
         try: return int(float(el["data-price-amount"])) if el else None
         except: return None
-
     def _meloman_extract_old_price(self, html: str) -> Optional[int]:
         if not html: return None
         m = re.search(r'data-price-type=["\']oldPrice["\'][^>]*data-price-amount=["\']?(\d+)["\']?', html, re.S)
@@ -522,7 +445,6 @@ class DiscountParser:
         el = soup.select_one(".old-price [data-price-amount], .price-old [data-price-amount], [data-price-type='oldPrice']")
         try: return int(float(el["data-price-amount"])) if el and el.get("data-price-amount") else None
         except: return None
-
     async def _meloman_fetch_prices(self, session, ids, heads):
         api = "https://www.meloman.kz/loyalty/products/prices/"
         prices = {}
@@ -538,7 +460,6 @@ class DiscountParser:
                         prices.update(data.get("prices", {}))
                 except: continue
         return prices
-
     async def fetch_meloman(self, session: AsyncSession) -> List[Dict[str, Any]]:
         cats = ["catalogsearch/result/?q=sale", "books", "videogames", "toys-and-entertainment", "shkola-kancelyariya-19236"]
         res = []
@@ -591,10 +512,6 @@ class DiscountParser:
                 if len(p_ids) < 15: break
                 await asyncio.sleep(0.3)
         return res
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  FREEDOM MOBILE
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_freedom(self, session: AsyncSession) -> List[Dict[str, Any]]:
         url = "https://api.fmobile.kz/catalog/api/v2/catalog/listing"
         heads = {**self.base_headers, "Referer": "https://fmobile.kz/", "Origin": "https://fmobile.kz"}
@@ -621,10 +538,6 @@ class DiscountParser:
             except: break
             await asyncio.sleep(0.2)
         return res
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  ADIDAS KZ
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_adidas(self, session: AsyncSession) -> List[Dict[str, Any]]:
         cats = {
             "muzhchiny/obuv": "Мужская обувь",
@@ -673,10 +586,6 @@ class DiscountParser:
                                 })
                     except: continue
         return res
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  INTERTOP
-    # ─────────────────────────────────────────────────────────────────────────
     async def fetch_intertop(self, session: AsyncSession) -> List[Dict[str, Any]]:
         cats = {
             "men/shoes": "Мужская обувь",
@@ -723,10 +632,6 @@ class DiscountParser:
                             })
                 except: continue
         return res
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #  DNS SHOP KZ
-    # ─────────────────────────────────────────────────────────────────────────
     async def _dns_discover_categories(self, session: AsyncSession) -> List[tuple]:
         """
         Динамически получает реальные категории с dns-shop.kz/catalog/
@@ -741,8 +646,6 @@ class DiscountParser:
         }
         found = []
         seen_ids = set()
-
-        # Улучшенные headers для DNS
         dns_headers = {
             **self.base_headers,
             "Referer": "https://www.dns-shop.kz/",
@@ -750,13 +653,10 @@ class DiscountParser:
             "DNT": "1",
             "Connection": "keep-alive",
         }
-
         r = await safe_request(session, "GET", "https://www.dns-shop.kz/catalog/", headers=dns_headers)
         if not r:
             logger.warning("[DNS] Не удалось получить страницу каталога для поиска категорий")
             return found
-
-        # Ищем все ссылки вида /catalog/{hex_id}/{slug}/
         matches = re.findall(
             r'/catalog/([0-9a-f]{16,})/([a-z0-9][a-z0-9\-]*[a-z0-9])/',
             r.text
@@ -764,12 +664,9 @@ class DiscountParser:
         for cat_id, slug in matches:
             if cat_id in seen_ids:
                 continue
-            # Берём все категории подходящие по slug ИЛИ все если slug-список пуст
             if not target_slugs or slug in target_slugs:
                 seen_ids.add(cat_id)
                 found.append((cat_id, slug))
-
-        # Если по target_slugs ничего не нашли — берём первые 15 любых
         if not found:
             seen_ids.clear()
             for cat_id, slug in matches:
@@ -778,14 +675,11 @@ class DiscountParser:
                     found.append((cat_id, slug))
                 if len(found) >= 15:
                     break
-
         logger.info(f"[DNS] Найдено {len(found)} категорий на странице каталога")
         return found
-
     async def fetch_dns(self, session: AsyncSession) -> List[Dict[str, Any]]:
         """
         Парсит скидочные товары с dns-shop.kz используя API.
-        
         Алгоритм:
         1. Получает ID товаров со страницы категории
         2. Отправляет POST запрос на /ajax-state/product-buy/ с ID товаров
@@ -793,55 +687,37 @@ class DiscountParser:
         """
         result = []
         seen = set()
-
         categories = await self._dns_discover_categories(session)
         if not categories:
             logger.warning("[DNS] Список категорий пустой, пропускаем DNS")
             return result
-
-        # Headers для обычных GET запросов
         get_headers = {
             **self.base_headers,
             "Referer": "https://www.dns-shop.kz/",
         }
-
         for cat_id, cat_slug in categories:
             cat_url = f"https://www.dns-shop.kz/catalog/{cat_id}/{cat_slug}/"
-
             for page in range(1, 4):
                 params = {"order": 6}
                 if page > 1:
                     params["p"] = page
-
-                # Получаем страницу категории
                 r = await safe_request(session, "GET", cat_url, headers=get_headers, params=params)
                 if not r:
                     break
-
-                # Извлекаем ID товаров из HTML
                 soup = BeautifulSoup(r.text, "html.parser")
                 product_ids = []
-                
                 for card in soup.select("[data-product]"):
                     entity_id = card.get("data-product", "").strip()
                     if entity_id and entity_id not in seen:
                         product_ids.append(entity_id)
-
                 if not product_ids:
                     break
-
-                # Обрабатываем batch товаров
                 for batch_start in range(0, len(product_ids), 18):
                     batch = product_ids[batch_start:batch_start + 18]
-                    
-                    # Попробуем другой формат payload
-                    # Вариант 1: Просто массив ID товаров
                     payload = {
                         "type": "product-buy",
-                        "ids": batch  # Может быть API ожидает просто массив ID?
+                        "ids": batch
                     }
-
-                    # Headers специально для AJAX POST запроса к /ajax-state/
                     api_headers = {
                         "Host": "www.dns-shop.kz",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -857,104 +733,70 @@ class DiscountParser:
                         "Cache-Control": "no-cache",
                         "Pragma": "no-cache",
                     }
-
                     api_url = "https://www.dns-shop.kz/ajax-state/product-buy/"
-                    
-                    # Отправляем JSON как строка в data, а не через json_data параметр
                     json_str = json.dumps(payload, ensure_ascii=False)
-                    
                     api_r = await safe_request(
                         session, "POST", api_url,
                         headers=api_headers,
                         content=json_str
                     )
-                    
                     if not api_r:
                         logger.warning(f"[DNS] API запрос вернул пусто: {api_r}")
                         continue
-
                     try:
-                        # Проверяем статус код
                         if api_r.status_code != 200:
                             logger.warning(f"[DNS] API возвращает статус {api_r.status_code}, текст: {api_r.text[:200]}")
                             continue
-                        
-                        # Проверяем, что API вообще возвращает JSON
                         response_text = api_r.text.strip()
                         if not response_text:
                             logger.warning(f"[DNS] API вернул пустой ответ")
                             continue
-                        
                         api_data = api_r.json()
                         if not api_data:
                             logger.warning(f"[DNS] JSON парсинг вернул пусто: {response_text[:200]}")
                             continue
-                        
                         items = await self._parse_dns_api_response(api_data, batch, seen)
                         result.extend(items)
                     except Exception as e:
                         logger.warning(f"[DNS] Ошибка парсинга API ответа: {e}\n  Ответ был: {api_r.text[:200] if api_r else 'None'}")
-                    
                     await asyncio.sleep(0.5)
-
         logger.info(f"[DNS] Собрано: {len(result)} товаров со скидками")
         return result
-
     async def _parse_dns_api_response(self, api_data: dict, product_ids: list, seen: set) -> List[Dict[str, Any]]:
         """Парсит ответ от /ajax-state/product-buy/ API"""
         items = []
-        
         try:
             containers = api_data.get("containers", [])
-            
             for container in containers:
                 try:
                     container_id = container.get("id", "")
                     html = container.get("html", "")
-                    
                     if not html:
                         continue
-                    
-                    # Парсим HTML с ценой из контейнера
                     soup = BeautifulSoup(html, "html.parser")
-                    
-                    # Ищем цены в HTML контейнера
                     current_price_el = soup.select_one("[class*='current'], [class*='price']:not([class*='old'])")
                     old_price_el = soup.select_one("[class*='old'], [class*='crossed']")
-                    
                     if not (current_price_el and old_price_el):
                         continue
-                    
                     current_price_text = current_price_el.get_text(strip=True)
                     old_price_text = old_price_el.get_text(strip=True)
-                    
                     current = self._parse_price_val(current_price_text)
                     old = self._parse_price_val(old_price_text)
-                    
                     if not (current and old) or old <= current:
                         continue
-                    
-                    # Ищем ссылку на товар в контейнере
                     link_el = soup.select_one("a[href*='/product/']")
                     if not link_el:
                         continue
-                    
                     href = link_el.get("href", "")
                     title = link_el.get_text(strip=True)[:100]
-                    
                     if not title:
                         continue
-                    
-                    # Извлекаем UID из ссылки
                     uid_m = re.search(r'/product/([0-9a-f\-]{30,})/', href)
                     uid = uid_m.group(1) if uid_m else href.split("/product/")[-1].split("/")[0]
-                    
                     if uid in seen:
                         continue
-                    
                     seen.add(uid)
                     link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else href
-                    
                     items.append({
                         "id": f"dns_{uid}",
                         "title": title,
@@ -970,19 +812,14 @@ class DiscountParser:
                     continue
         except Exception as e:
             logger.warning(f"[DNS] Ошибка при обработке API ответа: {e}")
-        
         return items
-
     def _dns_parse_html(self, html: str, seen: set) -> List[Dict[str, Any]]:
         """
         Парсит HTML страницы каталога DNS shop KZ.
-        
         Пробует несколько способов получить данные о товарах и ценах.
         """
         items = []
         soup = BeautifulSoup(html, "html.parser")
-
-        # ── Способ 1: JSON в data-product атрибутах ─────────────────────────
         for card in soup.select("[data-product]"):
             try:
                 data = json.loads(card.get("data-product", "{}"))
@@ -991,7 +828,6 @@ class DiscountParser:
                 title     = data.get("name") or data.get("title")
                 uid       = str(data.get("id") or data.get("sku") or "")
                 href      = data.get("url") or data.get("link") or ""
-
                 if not (title and price and old_price and uid):
                     continue
                 price     = float(re.sub(r"[^\d.]", "", str(price)))
@@ -1012,29 +848,21 @@ class DiscountParser:
                 })
             except:
                 continue
-
         if items:
             return items
-
-        # ── Способ 2: Парсить JSON из скриптов (NUXT DATA) ─────────────────────
         scripts = soup.find_all("script")
         for script in scripts:
             try:
                 text = script.string or ""
                 if "__NUXT_DATA__" not in text and "products" not in text:
                     continue
-                    
-                # Ищем JSON-подобные структуры с товарами
-                # Выделяем данные между скобками
                 if "window.__NUXT_DATA__" in text:
-                    # Это Nuxt JSON
                     start = text.find("window.__NUXT_DATA__=") + len("window.__NUXT_DATA__=")
                     end = text.find("</script>", start)
                     if start > 0 and end > 0:
                         json_str = text[start:end].rstrip(";")
                         try:
                             data = json.loads(json_str)
-                            # Рекурсивно ищем товары в структуре
                             products = self._extract_products_from_json(data, seen)
                             items.extend(products)
                             if items:
@@ -1043,16 +871,12 @@ class DiscountParser:
                             pass
             except:
                 continue
-
-        # ── Способ 3: HTML карточки с любыми ценами (без скидок) ─────────────
-        # Собираем хотя бы какие-то товары без проверки скидок
         card_selectors = ["div.catalog-product", "div.product-card", "li.catalog-product"]
         cards = []
         for sel in card_selectors:
             cards = soup.select(sel)
             if cards:
                 break
-
         for card in cards:
             try:
                 title_el = card.select_one(
@@ -1063,24 +887,18 @@ class DiscountParser:
                 )
                 if not title_el:
                     continue
-
                 href = title_el.get("href", "")
                 title = title_el.get_text(strip=True)
                 if not title or not href:
                     continue
-
                 uid_m = re.search(r'/product/([0-9a-f\-]{30,})/', href)
                 uid = uid_m.group(1) if uid_m else href.rstrip("/").split("/")[-1]
                 if not uid or uid in seen:
                     continue
-
                 link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else href
-                
-                # Пропускаем товары без явной скидки (пока)
                 old_el = card.select_one("[class*='price-old'], [class*='old-price']")
                 if not old_el:
                     continue
-                    
                 seen.add(uid)
                 items.append({
                     "id": f"dns_{uid}",
@@ -1094,15 +912,12 @@ class DiscountParser:
                 })
             except:
                 continue
-
         return items
-    
     def _extract_products_from_json(self, data, seen: set) -> List[Dict[str, Any]]:
         """Рекурсивно ищет товары в JSON структуре"""
         items = []
         try:
             if isinstance(data, dict):
-                # Ищем товары в различных ключах
                 for key in ["products", "items", "data", "content"]:
                     if key in data and isinstance(data[key], list):
                         for item in data[key]:
@@ -1110,7 +925,6 @@ class DiscountParser:
                                 product = self._parse_json_product(item, seen)
                                 if product:
                                     items.append(product)
-                # Рекурсивный поиск
                 for v in data.values():
                     items.extend(self._extract_products_from_json(v, seen))
             elif isinstance(data, list):
@@ -1119,37 +933,29 @@ class DiscountParser:
         except:
             pass
         return items
-    
     def _parse_json_product(self, item: dict, seen: set) -> Optional[Dict[str, Any]]:
         """Парсит товар из JSON объекта"""
         try:
             title = item.get("title") or item.get("name") or ""
             if not title:
                 return None
-                
             uid = str(item.get("id") or item.get("sku") or "")
             if not uid or uid in seen:
                 return None
-                
             price = item.get("price") or item.get("current_price")
             old_price = item.get("old_price") or item.get("base_price")
-            
             if not (price and old_price):
                 return None
-                
             try:
                 price = float(re.sub(r"[^\d.]", "", str(price)))
                 old_price = float(re.sub(r"[^\d.]", "", str(old_price)))
             except:
                 return None
-                
             if old_price <= price:
                 return None
-                
             seen.add(uid)
             href = item.get("url") or item.get("link") or ""
             link = f"https://www.dns-shop.kz{href}" if href.startswith("/") else (f"https://www.dns-shop.kz/product/{uid}/" if href == "" else href)
-            
             return {
                 "id": f"dns_{uid}",
                 "title": title[:100],
@@ -1162,14 +968,12 @@ class DiscountParser:
             }
         except:
             return None
-
     def _parse_price_val(self, raw) -> Optional[int]:
         if raw is None: return None
         digits = re.sub(r"[^\d]", "", str(raw))
         val = int(digits) if digits else None
         if val and (val < 500 or val > 2000000): return None
         return val
-
     async def fetch_discounts(self) -> List[Dict[str, Any]]:
         async with AsyncSession(impersonate=self.impersonate) as session:
             tasks = [
@@ -1177,7 +981,7 @@ class DiscountParser:
                 self.fetch_sulpak(session),
                 self.fetch_kaspi(session),
                 self.fetch_alser(session),
-                self.fetch_mechta(session),     # ← Мечта теперь в мониторинге!
+                self.fetch_mechta(session),
                 self.fetch_shopkz(session),
                 self.fetch_meloman(session),
                 self.fetch_freedom(session),
@@ -1187,7 +991,6 @@ class DiscountParser:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             try: it = await self.fetch_intertop(session); results.append(it)
             except: results.append([])
-
         all_items = []
         seen = set()
         for r in results:
@@ -1199,7 +1002,6 @@ class DiscountParser:
         all_items.sort(key=lambda x: x.get("discount", 0), reverse=True)
         logger.info(f"=== ИТОГО: бот видит {len(all_items)} активных акций со всех работающих магазинов ===")
         return all_items
-
     async def get_single_product_price(self, url: str, shop: str) -> Optional[int]:
         async with AsyncSession(impersonate=self.impersonate) as session:
             try:
@@ -1213,10 +1015,8 @@ class DiscountParser:
                     el = soup.select_one(".product__price, [data-price]")
                     return self._parse_price_val(el.get("data-price") or el.get_text()) if el else None
                 elif shop == "Mechta":
-                    # Для одного товара используем тот же метод, что и в общем парсере
                     from services.scraper import scraper_service
                     return await scraper_service.fetch_price(url)
             except: pass
         return None
-
 parser = DiscountParser()
