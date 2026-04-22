@@ -123,7 +123,10 @@ class ScraperService:
                         continue
                     price = int(price)
                     shop_link = p.get("shopLink", "")
-                    link = f"https://kaspi.kz{shop_link}" if shop_link else ""
+                    if shop_link and not shop_link.startswith("/shop"):
+                        link = f"https://kaspi.kz/shop{shop_link}"
+                    else:
+                        link = f"https://kaspi.kz{shop_link}" if shop_link else ""
                     images = p.get("previewImages", [])
                     img_url = ""
                     if images:
