@@ -280,29 +280,41 @@ class DiscountParser:
         logger.info("[Kaspi] Запуск глобального мониторинга цен...")
         from services.scraper import scraper_service
         from database import db
-        raw_items = await scraper_service.fetch_kaspi_discounts()
+        try:
+            raw_items = await scraper_service.fetch_kaspi_discounts()
+        except Exception as e:
+            logger.error(f"[Kaspi] Критическая ошибка при загрузке товаров: {e}")
+            return []
+        logger.info(f"[Kaspi] Получено {len(raw_items)} товаров из API, начинаем сверку с БД...")
         results = []
+        updated = 0
         for item in raw_items:
-            product_id = item["id"]
-            current_price = int(item["new_price"])
-            last_price = await db.get_product_price(product_id)
-            if last_price:
-                if current_price < last_price:
-                    if (last_price - current_price) / last_price >= 0.02:
-                        results.append({
-                            "id": product_id,
-                            "title": item["title"],
-                            "old_price": fmt_price(last_price),
-                            "new_price": fmt_price(current_price),
-                            "discount": calc_discount(last_price, current_price),
-                            "link": item["link"],
-                            "image": item.get("image"),
-                            "shop": "Kaspi",
-                            "category": item["category"]
-                        })
-                        logger.info(f"[Kaspi] Скидка: {item['title']} {last_price} -> {current_price}")
-            await db.update_product_price(product_id, current_price)
-        logger.info(f"[Kaspi] Обработка завершена. Найдено новых скидок: {len(results)}")
+            try:
+                product_id = item["id"]
+                current_price = int(item["new_price"])
+                last_price = await db.get_product_price(product_id)
+                if last_price:
+                    if current_price < last_price:
+                        drop_pct = (last_price - current_price) / last_price
+                        if drop_pct >= 0.02:
+                            results.append({
+                                "id": product_id,
+                                "title": item["title"],
+                                "old_price": fmt_price(last_price),
+                                "new_price": fmt_price(current_price),
+                                "discount": calc_discount(last_price, current_price),
+                                "link": item["link"],
+                                "image": item.get("image"),
+                                "shop": "Kaspi",
+                                "category": item["category"]
+                            })
+                            logger.info(f"[Kaspi] Скидка: {item['title']} {last_price} -> {current_price} (-{round(drop_pct*100)}%)")
+                await db.update_product_price(product_id, current_price)
+                updated += 1
+            except Exception as e:
+                logger.warning(f"[Kaspi] Ошибка обработки товара {item.get('id', '?')}: {e}")
+                continue
+        logger.info(f"[Kaspi] Обработка завершена. Обновлено: {updated}, Найдено скидок: {len(results)}")
         return results
     async def fetch_alser(self, session: AsyncSession) -> List[Dict[str, Any]]:
         result = []

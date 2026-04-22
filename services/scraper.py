@@ -6,6 +6,7 @@ import re
 from typing import Optional, List, Dict
 from playwright.async_api import async_playwright, Page, BrowserContext
 from playwright_stealth import Stealth
+from curl_cffi.requests import AsyncSession
 logger = logging.getLogger(__name__)
 class ScraperService:
     def __init__(self):
@@ -30,91 +31,155 @@ class ScraperService:
             {"slug": "krasota-i-zdorove", "label": "Красота и здоровье"}
         ]
     async def fetch_kaspi_discounts(self) -> list:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-            context = await browser.new_context(user_agent=self.user_agent, viewport={"width": 1920, "height": 1080}, locale="ru-RU", timezone_id="Asia/Almaty")
-            all_items = []
-            for target in self.targets:
-                url = f"https://kaspi.kz/shop/c/{target['slug']}/?q=%3AavailableInZones%3A{self.city_id}"
-                items_from_cat = await self._parse_category_smart(context, url, target['label'])
-                all_items.extend(items_from_cat)
-                await asyncio.sleep(random.uniform(2, 5))
-            await browser.close()
+        kaspi_categories = [
+            {"code": "Smartphones", "label": "kaspi"},
+            {"code": "Notebooks", "label": "kaspi"},
+            {"code": "Tablets", "label": "kaspi"},
+            {"code": "Headphones", "label": "kaspi"},
+            {"code": "tv_audio", "label": "kaspi"},
+            {"code": "Refrigerators", "label": "kaspi"},
+            {"code": "Vacuum Cleaners", "label": "kaspi"},
+            {"code": "Monitors", "label": "kaspi"},
+            {"code": "Computers", "label": "kaspi"},
+            {"code": "Desktop Computers", "label": "kaspi"},
+            {"code": "Game consoles", "label": "kaspi"},
+            {"code": "home equipment", "label": "kaspi"},
+            {"code": "Furniture", "label": "kaspi"},
+            {"code": "beauty care", "label": "kaspi"},
+            {"code": "Car Goods", "label": "kaspi"},
+            {"code": "sports and outdoors", "label": "kaspi"},
+            {"code": "child goods", "label": "kaspi"},
+            {"code": "pharmacy", "label": "kaspi"},
+            {"code": "construction and repair", "label": "kaspi"},
+            {"code": "fashion", "label": "kaspi"},
+            {"code": "shoes", "label": "kaspi"},
+            {"code": "fashion accessories", "label": "kaspi"},
+            {"code": "jewelry and bijouterie", "label": "kaspi"},
+            {"code": "home", "label": "kaspi"},
+            {"code": "pet goods", "label": "kaspi"},
+            {"code": "leisure", "label": "kaspi"},
+        ]
+        all_items = []
+        async with AsyncSession(impersonate="chrome124") as session:
+            for cat in kaspi_categories:
+                try:
+                    items = await self._fetch_kaspi_category_api(session, cat["code"], cat["label"])
+                    all_items.extend(items)
+                    logger.info(f"[Kaspi API] {cat['code']} -> {len(items)} товаров")
+                except Exception as e:
+                    logger.error(f"[Kaspi API] Ошибка категории {cat['code']}: {e}")
+                await asyncio.sleep(random.uniform(1, 3))
         seen = set()
         final = []
         for i in all_items:
             if i["id"] not in seen:
-                seen.add(i["id"]); final.append(i)
+                seen.add(i["id"])
+                final.append(i)
+        logger.info(f"[Kaspi API] Итого собрано уникальных товаров: {len(final)}")
         return final
-    async def _parse_category_smart(self, context: BrowserContext, url: str, category_label: str) -> list:
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
-        captured = {}
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(5)
-            await self._deep_scroll_and_capture(page, captured, category_label)
-        except Exception as e:
-            logger.error(f"[ScraperService] Kaspi Error: {e}")
-        finally:
-            await page.close()
-        return list(captured.values())
-    async def _deep_scroll_and_capture(self, page: Page, captured: dict, label: str):
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 1000)")
-            await asyncio.sleep(2)
-            products = await page.evaluate(r"""() => {
-                const results = [];
-                const cards = Array.from(document.querySelectorAll('.item-card, .product-card, [data-product-id]'));
-                cards.forEach(card => {
-                    const linkEl = card.querySelector('a[href*="/shop/p/"]');
-                    if (!linkEl) return;
-                    const priceEl = card.querySelector('.item-card__prices-price, .product-card__price');
-                    const productId = card.getAttribute('data-product-id');
-                    if (priceEl && !priceEl.innerText.includes('мес')) {
-                        results.push({
-                            id: productId,
-                            title: linkEl.innerText.trim(),
-                            href: linkEl.getAttribute('href'),
-                            priceText: priceEl.innerText,
-                            imgUrl: card.querySelector('img')?.src || ""
-                        });
-                    }
-                });
-                return results;
-            }""")
-            for d in products:
-                p_id = d.get('id')
-                if not p_id:
-                    m = re.search(r'(\d+)/?$', d['href'])
-                    p_id = m.group(1) if m else "0"
-                full_id = f"kp_{p_id}"
-                if p_id != "0" and full_id not in captured:
-                    val = self._extract_price(d['priceText'])
-                    if val:
-                        captured[full_id] = {
-                            "id": full_id, "title": d['title'], "new_price": val, "old_price": 0,
-                            "link": f"https://kaspi.kz{d['href']}", "image": d['imgUrl'], "shop": "Kaspi", "category": label
-                        }
-    async def fetch_price(self, url: str) -> Optional[int]:
-        """Для точечной следилки: получает цену одного товара"""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False, args=["--no-sandbox"])
-            context = await browser.new_context(user_agent=self.user_agent)
-            page = await context.new_page()
-            await Stealth().apply_stealth_async(page)
+    async def _fetch_kaspi_category_api(self, session: AsyncSession, category_code: str, label: str) -> list:
+        items = []
+        import urllib.parse
+        cat_encoded = urllib.parse.quote(category_code)
+        headers = {
+            "Accept": "application/json, text/*",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "User-Agent": self.user_agent,
+            "Referer": "https://kaspi.kz/shop/",
+            "Origin": "https://kaspi.kz",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Ks-City": self.city_id,
+        }
+        max_pages = 10
+        limit = 12
+        for page in range(max_pages):
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(3)
-                price_text = await page.evaluate('() => document.querySelector("meta[property=\\"product:price:amount\\"]")?.content')
-                if not price_text:
-                    price_text = await page.evaluate('() => document.querySelector(".item-card__prices-price, .product-card__price")?.innerText')
-                return self._extract_price(price_text)
+                url = (
+                    f"https://kaspi.kz/yml/product-view/pl/results"
+                    f"?q=%3AavailableInZones%3A{self.city_id}%3Acategory%3A{cat_encoded}"
+                    f"&sort=relevance&sc=&ui=d&i=-1&c={self.city_id}"
+                    f"&page={page}&limit={limit}"
+                )
+                r = await session.get(url, headers=headers, timeout=20)
+                if r.status_code != 200:
+                    logger.warning(f"[Kaspi API] {category_code} page {page} -> HTTP {r.status_code}")
+                    break
+                data = r.json()
+                products = data.get("data", [])
+                if not products:
+                    break
+                for p in products:
+                    product_id = str(p.get("id", ""))
+                    if not product_id:
+                        continue
+                    title = p.get("title", "")
+                    price = p.get("unitSalePrice") or p.get("unitPrice")
+                    if not price:
+                        continue
+                    price = int(price)
+                    shop_link = p.get("shopLink", "")
+                    link = f"https://kaspi.kz{shop_link}" if shop_link else ""
+                    images = p.get("previewImages", [])
+                    img_url = ""
+                    if images:
+                        img_url = images[0].get("medium", "") or images[0].get("small", "")
+                    items.append({
+                        "id": f"kp_{product_id}",
+                        "title": title,
+                        "new_price": price,
+                        "old_price": 0,
+                        "link": link,
+                        "image": img_url,
+                        "shop": "Kaspi",
+                        "category": label
+                    })
+                if len(products) < limit:
+                    break
+                await asyncio.sleep(random.uniform(0.5, 1.5))
             except Exception as e:
-                logger.error(f"[ScraperService] fetch_price error: {e}")
-                return None
-            finally:
-                await browser.close()
+                logger.error(f"[Kaspi API] Ошибка при загрузке {category_code} page {page}: {e}")
+                break
+        return items
+    async def fetch_price(self, url: str) -> Optional[int]:
+        m = re.search(r'(\d{5,})', url)
+        if not m:
+            logger.warning(f"[ScraperService] fetch_price: не удалось извлечь ID из URL: {url}")
+            return None
+        product_id = m.group(1)
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                api_url = (
+                    f"https://kaspi.kz/yml/product-view/pl/results"
+                    f"?q={product_id}%3AavailableInZones%3A{self.city_id}"
+                    f"&sort=relevance&sc=&ui=d&i=-1&c={self.city_id}"
+                    f"&page=0&limit=5"
+                )
+                headers = {
+                    "Accept": "application/json, text/*",
+                    "Accept-Language": "ru-RU,ru;q=0.9",
+                    "User-Agent": self.user_agent,
+                    "Referer": "https://kaspi.kz/shop/",
+                    "X-Ks-City": self.city_id,
+                }
+                r = await session.get(api_url, headers=headers, timeout=20)
+                if r.status_code != 200:
+                    logger.warning(f"[ScraperService] fetch_price API HTTP {r.status_code}")
+                    return None
+                data = r.json()
+                products = data.get("data", [])
+                for p in products:
+                    if str(p.get("id", "")) == product_id:
+                        return int(p.get("unitSalePrice") or p.get("unitPrice", 0))
+                if products:
+                    return int(products[0].get("unitSalePrice") or products[0].get("unitPrice", 0))
+        except Exception as e:
+            logger.error(f"[ScraperService] fetch_price API error: {e}")
+        return None
     def _extract_price(self, text: str) -> Optional[int]:
         if not text or "мес" in text.lower(): return None
         digits = re.sub(r"[^\d]", "", str(text))

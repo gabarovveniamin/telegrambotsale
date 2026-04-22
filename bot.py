@@ -219,7 +219,8 @@ async def cb_settings_categories(callback: types.CallbackQuery):
     categories = {
         "tech":    "💻 Электроника и Техника",
         "fashion": "👟 Одежда и Обувь (Adidas, Intertop)",
-        "other":   "📚 Другое (книги, игры)"
+        "other":   "📚 Другое (книги, игры)",
+        "kaspi":   "🔵 Kaspi.kz (мониторинг цен)"
     }
     buttons = []
     for code, label in categories.items():
