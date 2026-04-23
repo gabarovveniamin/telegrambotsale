@@ -161,7 +161,7 @@ async def cb_settings(callback: types.CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📉 Настроить порог скидки", callback_data="settings_threshold")],
             [InlineKeyboardButton(text="📂 Выбрать категории товаров", callback_data="settings_categories")],
-            [InlineKeyboardButton(text="🎯 Моя следилка (Kaspi)", callback_data="settings_track")],
+            [InlineKeyboardButton(text="🔵 Настроить Kaspi Категории", callback_data="kaspi_categories_menu")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
         ]),
         parse_mode="HTML"
@@ -204,7 +204,7 @@ async def _show_settings(target, user_id: int):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📉 Порог скидки", callback_data="settings_threshold")],
         [InlineKeyboardButton(text="📂 Категории товаров", callback_data="settings_categories")],
-        [InlineKeyboardButton(text="🎯 Добавить товар следилки", callback_data="settings_track")],
+        [InlineKeyboardButton(text="🔵 Настроить Kaspi Категории", callback_data="kaspi_categories_menu")],
         [InlineKeyboardButton(text="💎 Premium подписка", callback_data="menu_premium")],
     ])
     await target.answer(
@@ -225,7 +225,6 @@ async def cb_settings_categories(callback: types.CallbackQuery):
     for code, label in categories.items():
         status = "✅" if code in enabled_cats else "❌"
         buttons.append([InlineKeyboardButton(text=f"{status} {label}", callback_data=f"toggle_cat_{code}")])
-    buttons.append([InlineKeyboardButton(text="🔵 Настроить Kaspi Категории", callback_data="kaspi_categories_menu")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад в настройки", callback_data="menu_settings")])
     await callback.message.edit_text(
         "📂 <b>Выбор категорий уведомлений</b>\n\n"
@@ -256,7 +255,7 @@ async def cb_kaspi_categories_menu(callback: types.CallbackQuery):
         InlineKeyboardButton(text="✅ Выбрать все", callback_data="kcat_select_all"),
         InlineKeyboardButton(text="❌ Убрать все", callback_data="kcat_deselect_all")
     ])
-    buttons.append([InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="settings_categories")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в настройки", callback_data="menu_settings")])
     
     await callback.message.edit_text(
         "🔵 <b>Kaspi.kz Категории</b>\n\n"
