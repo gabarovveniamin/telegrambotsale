@@ -65,6 +65,14 @@ class Database:
                 WHERE 'fashion' <> ALL(categories)
             """)
             await conn.execute("""
+                UPDATE users 
+                SET categories = (
+                    SELECT array_agg(DISTINCT c)
+                    FROM unnest(array_remove(categories, 'kaspi') || ARRAY['kaspi_Smartphones', 'kaspi_Notebooks', 'kaspi_Tablets', 'kaspi_Headphones', 'kaspi_tv_audio', 'kaspi_Refrigerators', 'kaspi_Vacuum Cleaners', 'kaspi_Monitors', 'kaspi_Computers', 'kaspi_Desktop Computers', 'kaspi_Game consoles', 'kaspi_home equipment', 'kaspi_Furniture', 'kaspi_beauty care', 'kaspi_Car Goods', 'kaspi_sports and outdoors', 'kaspi_child goods', 'kaspi_pharmacy', 'kaspi_construction and repair', 'kaspi_fashion', 'kaspi_shoes', 'kaspi_fashion accessories', 'kaspi_jewelry and bijouterie', 'kaspi_home', 'kaspi_pet goods', 'kaspi_leisure']::text[]) c
+                )
+                WHERE 'kaspi' = ANY(categories)
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     user_id         BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     is_active       BOOLEAN NOT NULL DEFAULT FALSE,

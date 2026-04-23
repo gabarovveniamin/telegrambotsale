@@ -3,7 +3,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from parser import parser
 from database import db
 from bot import broadcast_message
-from config import config
+from config import config, KASPI_CATEGORIES
 from datetime import datetime, timezone
 from services.scraper import scraper_service
 logger = logging.getLogger(__name__)
@@ -35,8 +35,15 @@ async def run_monitoring_cycle():
                 percent = "?"
             if not isinstance(percent, int) or percent < 5:
                 continue
+            cat_raw = item.get("category", "tech")
+            if cat_raw in KASPI_CATEGORIES:
+                cat_display = KASPI_CATEGORIES[cat_raw]
+            else:
+                cat_display = cat_raw
+            
             text = (
-                f"🆕 Новая скидка в {item['shop']}!\n\n"
+                f"🆕 Новая скидка в {item['shop']}!\n"
+                f"📁 Категория: {cat_display}\n\n"
                 f"🏷 <b>{item['title']}</b>\n"
                 f"📉 -{percent}%\n"
                 f"💰 <s>{item['old_price']}</s> → <b>{item['new_price']}</b>\n"
@@ -47,7 +54,7 @@ async def run_monitoring_cycle():
                 item.get("image"),
                 premium_only=True,
                 min_discount=percent,
-                category=item.get("category", "tech")
+                category=cat_raw
             )
             sent_count += 1
         logger.info(f"Monitoring cycle finished. Sent {sent_count} notifications to Premium users.")

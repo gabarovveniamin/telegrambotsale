@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from config import config
+from config import config, KASPI_CATEGORIES
 from database import db
 from services.cryptopay_service import cryptopay_service
 logger = logging.getLogger(__name__)
@@ -220,12 +220,12 @@ async def cb_settings_categories(callback: types.CallbackQuery):
         "tech":    "💻 Электроника и Техника",
         "fashion": "👟 Одежда и Обувь (Adidas, Intertop)",
         "other":   "📚 Другое (книги, игры)",
-        "kaspi":   "🔵 Kaspi.kz (мониторинг цен)"
     }
     buttons = []
     for code, label in categories.items():
         status = "✅" if code in enabled_cats else "❌"
         buttons.append([InlineKeyboardButton(text=f"{status} {label}", callback_data=f"toggle_cat_{code}")])
+    buttons.append([InlineKeyboardButton(text="🔵 Настроить Kaspi Категории", callback_data="kaspi_categories_menu")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад в настройки", callback_data="menu_settings")])
     await callback.message.edit_text(
         "📂 <b>Выбор категорий уведомлений</b>\n\n"
@@ -234,6 +234,67 @@ async def cb_settings_categories(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
+@router.callback_query(F.data == "kaspi_categories_menu")
+async def cb_kaspi_categories_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    enabled_cats = await db.get_user_categories(user_id)
+    
+    buttons = []
+    row = []
+    for code, label in KASPI_CATEGORIES.items():
+        status = "✅" if code in enabled_cats else "❌"
+        short_label = label.split(" ", 1)[1] if " " in label else label
+        row.append(InlineKeyboardButton(text=f"{status} {short_label}", callback_data=f"toggle_kcat_{code}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+        
+    buttons.append([
+        InlineKeyboardButton(text="✅ Выбрать все", callback_data="kcat_select_all"),
+        InlineKeyboardButton(text="❌ Убрать все", callback_data="kcat_deselect_all")
+    ])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="settings_categories")])
+    
+    await callback.message.edit_text(
+        "🔵 <b>Kaspi.kz Категории</b>\n\n"
+        "Выберите категории товаров Kaspi.kz, которые вы хотите отслеживать:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("toggle_kcat_"))
+async def cb_toggle_kcat(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cat_to_toggle = callback.data.replace("toggle_kcat_", "")
+    enabled_cats = await db.get_user_categories(user_id)
+    if cat_to_toggle in enabled_cats:
+        enabled_cats.remove(cat_to_toggle)
+    else:
+        enabled_cats.append(cat_to_toggle)
+    await db.set_user_categories(user_id, enabled_cats)
+    await cb_kaspi_categories_menu(callback)
+
+@router.callback_query(F.data == "kcat_select_all")
+async def cb_kcat_select_all(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    enabled_cats = await db.get_user_categories(user_id)
+    for code in KASPI_CATEGORIES.keys():
+        if code not in enabled_cats:
+            enabled_cats.append(code)
+    await db.set_user_categories(user_id, enabled_cats)
+    await cb_kaspi_categories_menu(callback)
+
+@router.callback_query(F.data == "kcat_deselect_all")
+async def cb_kcat_deselect_all(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    enabled_cats = await db.get_user_categories(user_id)
+    enabled_cats = [c for c in enabled_cats if c not in KASPI_CATEGORIES]
+    await db.set_user_categories(user_id, enabled_cats)
+    await cb_kaspi_categories_menu(callback)
 @router.callback_query(F.data.startswith("toggle_cat_"))
 async def cb_toggle_category(callback: types.CallbackQuery):
     user_id = callback.from_user.id
