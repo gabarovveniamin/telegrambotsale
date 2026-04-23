@@ -68,7 +68,7 @@ async def build_referral_kb(user_id: int) -> InlineKeyboardMarkup:
     ref_count = await db.get_referral_count(user_id)
     reward_status = await db.get_ref_reward_status(user_id)
     buttons = [
-        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text=Получай%20скидки%20первым%20с%20этим%20ботом!")],
+        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}Получай скидки первым с этим ботом!")],
         [InlineKeyboardButton(text="📋 Скопировать ссылку", callback_data="copy_ref_link")],
     ]
     if ref_count >= REFERRAL_MILESTONE_WEEK:
