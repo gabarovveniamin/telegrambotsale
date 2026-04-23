@@ -63,7 +63,9 @@ async def cb_admin_menu(callback: types.CallbackQuery):
     await callback.answer()
 @admin_router.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     stats = await db.get_stats()
     premium_list = await db.get_all_premium_list()
     total_stars = sum(p.get("stars_paid", 0) for p in premium_list)
@@ -87,7 +89,9 @@ async def cb_admin_stats(callback: types.CallbackQuery):
     await callback.answer()
 @admin_router.callback_query(F.data == "admin_users")
 async def cb_admin_users(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     await callback.message.edit_text(
         "🔍 <b>Поиск пользователя</b>\n\nПришлите ID или @username пользователя для управления его профилем.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -132,7 +136,9 @@ async def process_user_search(message: types.Message, state: FSMContext):
     await state.clear()
 @admin_router.callback_query(F.data == "admin_broadcast")
 async def cb_admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     await callback.message.edit_text(
         "📢 <b>Массовая рассылка</b>\n\nПришлите текст сообщения (можно с HTML-разметкой), который увидят все пользователи.\n\n<i>/cancel для отмены</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -157,26 +163,34 @@ async def process_broadcast(message: types.Message, state: FSMContext, bot: Bot)
     await message.answer(f"✅ <b>Рассылка завершена!</b>\nОтправлено сообщений: <b>{count}</b>", parse_mode="HTML")
 @admin_router.callback_query(F.data == "admin_actions")
 async def cb_admin_actions(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     await callback.message.edit_text("⚡️ <b>Быстрые действия</b>", reply_markup=build_admin_actions_kb(), parse_mode="HTML")
     await callback.answer()
 @admin_router.callback_query(F.data == "admin_run_monitoring")
 async def cb_admin_run_monitoring(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     from scheduler import run_monitoring_cycle
     await callback.answer("⏳ Мониторинг запущен...")
     await run_monitoring_cycle()
     await callback.message.answer("✅ <b>Мониторинг завершен!</b>", parse_mode="HTML")
 @admin_router.callback_query(F.data == "admin_run_tracker")
 async def cb_admin_run_tracker(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     from scheduler import run_personal_tracker_cycle
     await callback.answer("⏳ Следилка запущена...")
     await run_personal_tracker_cycle()
     await callback.message.answer("✅ <b>Следилка завершена!</b>", parse_mode="HTML")
 @admin_router.callback_query(F.data == "admin_premium_list")
 async def cb_admin_premium_list(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     prem_users = await db.get_all_premium_list()
     if not prem_users:
         await callback.message.edit_text(
@@ -202,6 +216,9 @@ async def cb_admin_premium_list(callback: types.CallbackQuery):
     await callback.answer()
 @admin_router.callback_query(F.data.startswith("admin_give_"))
 async def cb_admin_give_prem(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     user_id = int(callback.data.split("_")[-1])
     await state.update_data(target_user_id=user_id)
     await callback.message.answer(
@@ -232,13 +249,18 @@ async def process_give_prem(message: types.Message, state: FSMContext):
     await state.clear()
 @admin_router.callback_query(F.data.startswith("admin_revoke_"))
 async def cb_admin_revoke_prem(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     user_id = int(callback.data.split("_")[-1])
     await db.deactivate_subscription(user_id)
     await callback.message.edit_text(f"🚫 Premium отозван у пользоватя {user_id}", reply_markup=build_admin_main_kb())
     await callback.answer("Premium отозван")
 @admin_router.callback_query(F.data.startswith("admin_msg_"))
 async def cb_admin_send_msg(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
     user_id = int(callback.data.split("_")[-1])
     await state.update_data(target_user_id=user_id)
     await callback.message.answer(f"💬 <b>Сообщение для {user_id}</b>\n\nВведите текст сообщения:")
