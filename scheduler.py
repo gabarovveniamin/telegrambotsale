@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from parser import parser
@@ -84,6 +85,72 @@ async def run_personal_tracker_cycle():
             except Exception as e:
                 logger.error(f"Failed to send notice: {e}")
     logger.info("Personal tracker cycle finished.")
+async def run_product_watch_cycle():
+    """
+    Cycle for keyword-based product watches.
+    For each user watch (keyword), searches all marketplaces and notifies
+    the user when a price drops compared to the previously recorded price.
+    Runs every 30 minutes.
+    """
+    logger.info("Starting product watch cycle...")
+    from bot import bot
+    from parser import parser
+    watches = await db.get_all_product_watches()
+    if not watches:
+        logger.info("Product watch cycle: no active watches.")
+        return
+    logger.info(f"Product watch cycle: checking {len(watches)} watches...")
+    for watch in watches:
+        watch_id = watch["id"]
+        user_id = watch["user_id"]
+        query = watch["query"]
+        try:
+            results = await parser.search_products_by_query(query)
+        except Exception as e:
+            logger.error(f"[Watch] search error for '{query}': {e}")
+            continue
+        for item in results:
+            try:
+                product_id = item["id"]
+                current_price = item["price"]
+                if current_price <= 0:
+                    continue
+                old_price = await db.upsert_watch_result(
+                    watch_id=watch_id,
+                    product_id=product_id,
+                    title=item["title"],
+                    shop=item["shop"],
+                    link=item["link"],
+                    price=current_price,
+                )
+                if old_price is not None and current_price < old_price:
+                    diff = old_price - current_price
+                    pct = round(diff / old_price * 100)
+                    if pct < 1:
+                        continue
+                    title_short = item["title"][:80] + "..." if len(item["title"]) > 80 else item["title"]
+                    intro = (
+                        f"🔍 <b>Следилка нашла товар со скидкой!</b>\n"
+                        f"Запрос: <b>{query}</b> · {item['shop']} · -{pct}%"
+                    )
+                    detail = (
+                        f"🏷 <b>{title_short}</b>\n\n"
+                        f"💰 Старая цена: <s>{old_price:,} ₸</s>\n"
+                        f"🔥 Новая цена: <b>{current_price:,} ₸</b> (-{pct}%)\n"
+                        f"💵 Выгода: <b>{diff:,} ₸</b>\n\n"
+                        f"🔗 <a href='{item['link']}'>Посмотреть в {item['shop']}</a>"
+                    )
+                    try:
+                        await bot.send_message(user_id, intro, parse_mode="HTML")
+                        await asyncio.sleep(0.3)
+                        await bot.send_message(user_id, detail, parse_mode="HTML", disable_web_page_preview=False)
+                        logger.info(f"[Watch] Notified user {user_id}: '{query}' in {item['shop']} -{pct}%")
+                    except Exception as e:
+                        logger.error(f"[Watch] Failed to notify user {user_id}: {e}")
+            except Exception as e:
+                logger.error(f"[Watch] Error processing item {item.get('id', '?')}: {e}")
+                continue
+    logger.info("Product watch cycle finished.")
 async def run_subscription_check_cycle():
     """
     Проверка подписок:
@@ -145,6 +212,13 @@ def setup_scheduler():
         "interval",
         minutes=5,
         id="personal_tracker_job",
+        next_run_time=datetime.now()
+    )
+    scheduler.add_job(
+        run_product_watch_cycle,
+        "interval",
+        minutes=30,
+        id="product_watch_job",
         next_run_time=datetime.now()
     )
     scheduler.add_job(

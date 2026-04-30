@@ -1031,4 +1031,198 @@ class DiscountParser:
                     return await scraper_service.fetch_price(url)
             except: pass
         return None
+    async def search_products_by_query(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search all marketplaces for products matching the given keyword query.
+        Returns a list of found products with current price info.
+        Used for the keyword-based watch feature.
+        """
+        results: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+        async with AsyncSession(impersonate=self.impersonate) as session:
+            tasks = [
+                self._search_technodom(session, query, seen_ids),
+                self._search_kaspi(session, query, seen_ids),
+                self._search_sulpak(session, query, seen_ids),
+                self._search_alser(session, query, seen_ids),
+            ]
+            found_lists = await asyncio.gather(*tasks, return_exceptions=True)
+        for found in found_lists:
+            if isinstance(found, list):
+                results.extend(found)
+        logger.info(f"[Watch Search] '{query}' -> {len(results)} total results")
+        return results
+    async def _search_technodom(self, session: AsyncSession, query: str, seen: set) -> List[Dict[str, Any]]:
+        url = "https://api.technodom.kz/katalog/api/v2/products/search"
+        headers = {
+            **self.base_headers,
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Content-Language": "ru-RU",
+            "Affiliation": "web",
+            "Origin": "https://www.technodom.kz",
+            "Referer": "https://www.technodom.kz/",
+        }
+        payload = {
+            "categories": [""],
+            "city_id": CITY_ID_TECHNODOM,
+            "query": query,
+            "limit": 20,
+            "page": 1,
+            "sort_by": "relevance",
+            "type": "full_search",
+        }
+        results = []
+        try:
+            r = await safe_request(session, "POST", url, headers=headers, json_data=payload)
+            if not r:
+                return results
+            data = r.json()
+            for p in (data.get("products") or []):
+                sku = str(p.get("sku") or "").strip()
+                if not sku or sku in seen:
+                    continue
+                seen.add(sku)
+                title = (p.get("title") or "").strip()
+                price = p.get("price")
+                if not (title and price):
+                    continue
+                old_price = p.get("old_price")
+                results.append({
+                    "id": f"td_{sku}",
+                    "title": title,
+                    "price": int(price),
+                    "old_price": int(old_price) if old_price else int(price),
+                    "link": f"https://www.technodom.kz/p/{p.get('uri', '')}",
+                    "shop": "Technodom",
+                })
+        except Exception as e:
+            logger.warning(f"[Search Technodom] '{query}': {e}")
+        return results
+    async def _search_kaspi(self, session: AsyncSession, query: str, seen: set) -> List[Dict[str, Any]]:
+        import urllib.parse
+        city_id = "750000000"
+        q_encoded = urllib.parse.quote(query)
+        headers = {
+            "Accept": "application/json, text/*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "User-Agent": self.base_headers["User-Agent"],
+            "Referer": "https://kaspi.kz/shop/",
+            "X-Ks-City": city_id,
+        }
+        url = (
+            f"https://kaspi.kz/yml/product-view/pl/results"
+            f"?q=%3AavailableInZones%3A{city_id}%3A{q_encoded}"
+            f"&sort=relevance&sc=&ui=d&i=-1&c={city_id}"
+            f"&page=0&limit=20"
+        )
+        results = []
+        try:
+            r = await session.get(url, headers=headers, timeout=20)
+            if r.status_code != 200:
+                return results
+            data = r.json()
+            for p in (data.get("data") or []):
+                product_id = str(p.get("id", ""))
+                if not product_id or f"kp_{product_id}" in seen:
+                    continue
+                seen.add(f"kp_{product_id}")
+                title = p.get("title", "")
+                price = p.get("unitSalePrice") or p.get("unitPrice")
+                if not (title and price):
+                    continue
+                shop_link = p.get("shopLink", "")
+                link = f"https://kaspi.kz{shop_link}" if shop_link else ""
+                results.append({
+                    "id": f"kp_{product_id}",
+                    "title": title,
+                    "price": int(price),
+                    "old_price": int(price),
+                    "link": link,
+                    "shop": "Kaspi",
+                })
+        except Exception as e:
+            logger.warning(f"[Search Kaspi] '{query}': {e}")
+        return results
+    async def _search_sulpak(self, session: AsyncSession, query: str, seen: set) -> List[Dict[str, Any]]:
+        import urllib.parse
+        encoded = urllib.parse.quote(query)
+        url = f"https://www.sulpak.kz/f/{encoded}/"
+        results = []
+        try:
+            r = await safe_request(session, "GET", url, headers=self.base_headers)
+            if not r:
+                return results
+            soup = BeautifulSoup(r.text, "html.parser")
+            for card in soup.select("div.product__item-js")[:20]:
+                title = card.get("data-name", "").strip()
+                code = card.get("data-code", "").strip()
+                new_p = card.get("data-price", "").strip()
+                old_tag = card.select_one(".product__item-price-old")
+                old_p = re.sub(r"[^\d]", "", old_tag.get_text()) if old_tag else new_p
+                if not (title and code and new_p):
+                    continue
+                item_id = f"sp_{code}"
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
+                a_tag = card.select_one("a.product__item-images")
+                link = f"https://www.sulpak.kz{a_tag['href']}" if a_tag else ""
+                results.append({
+                    "id": item_id,
+                    "title": title,
+                    "price": int(new_p) if new_p.isdigit() else 0,
+                    "old_price": int(old_p) if old_p and old_p.isdigit() else (int(new_p) if new_p.isdigit() else 0),
+                    "link": link,
+                    "shop": "Sulpak",
+                })
+        except Exception as e:
+            logger.warning(f"[Search Sulpak] '{query}': {e}")
+        return results
+    async def _search_alser(self, session: AsyncSession, query: str, seen: set) -> List[Dict[str, Any]]:
+        import urllib.parse
+        encoded = urllib.parse.quote(query)
+        url = f"https://alser.kz/search/?q={encoded}"
+        heads = {
+            "Host": "alser.kz",
+            "Accept": "*/*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Referer": "https://alser.kz/",
+        }
+        results = []
+        try:
+            r = await safe_request(session, "GET", url, headers=heads)
+            if not r:
+                return results
+            soup = BeautifulSoup(r.text, "html.parser")
+            for card in soup.select(".product-item, .catalog-item")[:20]:
+                try:
+                    title_el = card.select_one("a.product-name, .product-title, h2 a, h3 a")
+                    if not title_el:
+                        continue
+                    title = title_el.get_text(strip=True)
+                    href = title_el.get("href", "")
+                    link = f"https://alser.kz{href}" if href.startswith("/") else href
+                    uid = re.sub(r"[^a-z0-9]", "", link.lower())[-20:]
+                    item_id = f"al_{uid}"
+                    if item_id in seen:
+                        continue
+                    seen.add(item_id)
+                    price_el = card.select_one(".price, [class*='price']:not([class*='old'])")
+                    price_val = self._parse_price_val(price_el.get_text()) if price_el else None
+                    if not price_val:
+                        continue
+                    results.append({
+                        "id": item_id,
+                        "title": title,
+                        "price": price_val,
+                        "old_price": price_val,
+                        "link": link,
+                        "shop": "Alser",
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"[Search Alser] '{query}': {e}")
+        return results
 parser = DiscountParser()

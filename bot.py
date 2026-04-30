@@ -28,10 +28,13 @@ REFERRAL_MILESTONE_WEEK = 3
 REFERRAL_MILESTONE_MONTH = 10
 class TrackState(StatesGroup):
     waiting_for_url = State()
+class WatchState(StatesGroup):
+    waiting_for_query = State()
 def build_main_menu(user_id: int = None) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
          InlineKeyboardButton(text="👑 Premium", callback_data="menu_premium")],
+        [InlineKeyboardButton(text="🔍 Слежка по названию", callback_data="menu_watch")],
         [InlineKeyboardButton(text="🔗 Реферальная программа", callback_data="menu_referral")],
         [InlineKeyboardButton(text="📊 Моя статистика", callback_data="menu_stats")],
     ]
@@ -358,6 +361,166 @@ async def process_track_url(message: types.Message, state: FSMContext):
 @router.message(Command("premium"))
 async def cmd_premium(message: types.Message):
     await _show_premium_menu(message, message.from_user.id)
+@router.callback_query(F.data == "menu_watch")
+async def cb_watch_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    is_prem = await db.is_premium(user_id)
+    if not is_prem:
+        await callback.answer(
+            "👑 Слежка по названию доступна только для Premium-подписчиков!\n"
+            "Купи подписку или пригласи друзей.",
+            show_alert=True
+        )
+        return
+    watches = await db.get_user_product_watches(user_id)
+    await callback.message.edit_text(
+        await _build_watch_menu_text(watches),
+        reply_markup=await _build_watch_menu_kb(watches),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+async def _build_watch_menu_text(watches: list) -> str:
+    if not watches:
+        return (
+            "🔍 <b>Слежка по названию</b>\n\n"
+            "Введите название товара — я буду искать его на всех маркетплейсах "
+            "(Kaspi, Technodom, Sulpak, Alser) и пришлю уведомление, "
+            "когда цена снизится.\n\n"
+            "У вас пока нет активных слежений. Нажмите <b>+ Добавить товар</b>!"
+        )
+    lines = [
+        "🔍 <b>Слежка по названию</b>\n\n",
+        f"📋 Активных слежений: <b>{len(watches)}</b>\n\n",
+    ]
+    for w in watches:
+        lines.append(f"• <b>{w['query']}</b>\n")
+    lines.append("\nБот проверяет цены каждые 30 минут на всех маркетплейсах.")
+    return "".join(lines)
+async def _build_watch_menu_kb(watches: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="➕ Добавить товар", callback_data="watch_add")],
+    ]
+    for w in watches:
+        query_short = w['query'][:25] + "..." if len(w['query']) > 25 else w['query']
+        buttons.append([
+            InlineKeyboardButton(text=f"🗑 {query_short}", callback_data=f"watch_del_{w['id']}")
+        ])
+    if watches:
+        buttons.append([
+            InlineKeyboardButton(text="🗑 Удалить все", callback_data="watch_del_all")
+        ])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+@router.callback_query(F.data == "watch_add")
+async def cb_watch_add(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    watches = await db.get_user_product_watches(user_id)
+    if len(watches) >= 10:
+        await callback.answer(
+            "❌ Максимум 10 слежений. Удалите старое, чтобы добавить новое.",
+            show_alert=True
+        )
+        return
+    await callback.message.answer(
+        "🔍 <b>Новое слежение по названию</b>\n\n"
+        "Напишите название товара, который хотите отслеживать.\n"
+        "Например: <code>iPhone 15 Pro</code>, <code>Samsung Galaxy S24</code>, "
+        "<code>PlayStation 5</code>\n\n"
+        "Я буду искать его на Kaspi, Technodom, Sulpak и Alser и уведомлю "
+        "при снижении цены! 🔔",
+        parse_mode="HTML"
+    )
+    await state.set_state(WatchState.waiting_for_query)
+    await callback.answer()
+@router.message(WatchState.waiting_for_query)
+async def process_watch_query(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+    if len(query) < 3:
+        await message.answer("❌ Название слишком короткое. Введите минимум 3 символа.")
+        return
+    if len(query) > 100:
+        await message.answer("❌ Название слишком длинное. Максимум 100 символов.")
+        return
+    user_id = message.from_user.id
+    searching_msg = await message.answer(
+        f"🔍 Ищу <b>{query}</b> на маркетплейсах...\n\n"
+        "Это может занять 10–30 секунд.",
+        parse_mode="HTML"
+    )
+    try:
+        from parser import parser
+        results = await parser.search_products_by_query(query)
+    except Exception as e:
+        logger.error(f"Watch search error: {e}")
+        results = []
+    watch_id = await db.add_product_watch(user_id, query)
+    found_count = len(results)
+    shops_found = list({r["shop"] for r in results})
+    if results:
+        for item in results:
+            try:
+                await db.upsert_watch_result(
+                    watch_id=watch_id,
+                    product_id=item["id"],
+                    title=item["title"],
+                    shop=item["shop"],
+                    link=item["link"],
+                    price=item["price"],
+                )
+            except Exception as e:
+                logger.warning(f"upsert_watch_result error: {e}")
+    shops_str = ", ".join(shops_found) if shops_found else "—"
+    await searching_msg.delete()
+    if found_count > 0:
+        await message.answer(
+            f"✅ <b>Слежение добавлено!</b>\n\n"
+            f"🏷 Товар: <b>{query}</b>\n"
+            f"📦 Найдено позиций: <b>{found_count}</b>\n"
+            f"🏪 Магазины: {shops_str}\n\n"
+            "🔔 Я буду проверять цены каждые 30 минут и пришлю уведомление при снижении цены!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Мои слежения", callback_data="menu_watch")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+            ])
+        )
+    else:
+        await message.answer(
+            f"⚠️ <b>Слежение добавлено, но товар пока не найден.</b>\n\n"
+            f"🏷 Товар: <b>{query}</b>\n\n"
+            "Бот будет продолжать искать товар при каждой проверке (каждые 30 мин). "
+            "Как только найдёт — уведомит тебя!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Мои слежения", callback_data="menu_watch")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+            ])
+        )
+    await state.clear()
+@router.callback_query(F.data.startswith("watch_del_"))
+async def cb_watch_delete(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    data = callback.data.replace("watch_del_", "")
+    if data == "all":
+        await db.remove_all_product_watches(user_id)
+        await callback.answer("🗑 Все слежения удалены!", show_alert=True)
+    else:
+        try:
+            watch_id = int(data)
+            await db.remove_product_watch(watch_id, user_id)
+            await callback.answer("🗑 Слежение удалено!", show_alert=False)
+        except ValueError:
+            await callback.answer("❌ Ошибка", show_alert=True)
+            return
+    watches = await db.get_user_product_watches(user_id)
+    try:
+        await callback.message.edit_text(
+            await _build_watch_menu_text(watches),
+            reply_markup=await _build_watch_menu_kb(watches),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 @router.callback_query(F.data == "menu_premium")
 async def cb_premium_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id

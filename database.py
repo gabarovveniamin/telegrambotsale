@@ -134,6 +134,33 @@ class Database:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_product_prices_update ON product_prices(updated_at)
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS product_watches (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    query       TEXT NOT NULL,
+                    added_at    TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS product_watch_results (
+                    id              SERIAL PRIMARY KEY,
+                    watch_id        INTEGER NOT NULL REFERENCES product_watches(id) ON DELETE CASCADE,
+                    product_id      TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    shop            TEXT NOT NULL,
+                    link            TEXT NOT NULL,
+                    last_price      BIGINT NOT NULL,
+                    found_at        TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(watch_id, product_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_product_watches_user ON product_watches(user_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_product_watch_results_watch ON product_watch_results(watch_id)
+            """)
         logger.info("Database tables initialized.")
     async def get_product_price(self, product_id: str) -> Optional[int]:
         """Get last known price of a product."""
@@ -529,4 +556,73 @@ class Database:
         return row is not None
     async def save_used_transaction(self, tx_hash: str, user_id: int):
         await self.pool.execute('INSERT INTO processed_transactions (tx_hash, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', tx_hash, user_id)
+    async def add_product_watch(self, user_id: int, query: str) -> int:
+        """Add a keyword watch for a user. Returns the new watch id."""
+        row = await self.pool.fetchrow(
+            "INSERT INTO product_watches (user_id, query) VALUES ($1, $2) RETURNING id",
+            user_id, query.strip()
+        )
+        return row["id"]
+    async def get_user_product_watches(self, user_id: int) -> List[dict]:
+        """Get all keyword watches for a user."""
+        rows = await self.pool.fetch(
+            "SELECT id, query, added_at FROM product_watches WHERE user_id = $1 ORDER BY added_at DESC",
+            user_id
+        )
+        return [dict(r) for r in rows]
+    async def get_all_product_watches(self) -> List[dict]:
+        """Get all watches across all users."""
+        rows = await self.pool.fetch(
+            "SELECT pw.id, pw.user_id, pw.query FROM product_watches pw ORDER BY pw.id"
+        )
+        return [dict(r) for r in rows]
+    async def remove_product_watch(self, watch_id: int, user_id: int):
+        """Delete a watch (only if it belongs to the user)."""
+        await self.pool.execute(
+            "DELETE FROM product_watches WHERE id = $1 AND user_id = $2",
+            watch_id, user_id
+        )
+    async def remove_all_product_watches(self, user_id: int):
+        """Delete all watches for a user."""
+        await self.pool.execute(
+            "DELETE FROM product_watches WHERE user_id = $1",
+            user_id
+        )
+    async def get_watch_result(self, watch_id: int, product_id: str) -> Optional[dict]:
+        """Get a tracked result for a specific watch + product combo."""
+        row = await self.pool.fetchrow(
+            "SELECT * FROM product_watch_results WHERE watch_id = $1 AND product_id = $2",
+            watch_id, product_id
+        )
+        return dict(row) if row else None
+    async def upsert_watch_result(self, watch_id: int, product_id: str, title: str, shop: str, link: str, price: int) -> Optional[int]:
+        """
+        Insert or update a watch result.
+        Returns old price if the row already existed (price comparison needed), else None.
+        """
+        existing = await self.pool.fetchrow(
+            "SELECT last_price FROM product_watch_results WHERE watch_id = $1 AND product_id = $2",
+            watch_id, product_id
+        )
+        if existing:
+            old_price = existing["last_price"]
+            await self.pool.execute(
+                "UPDATE product_watch_results SET last_price = $1, title = $2, link = $3 WHERE watch_id = $4 AND product_id = $5",
+                price, title, link, watch_id, product_id
+            )
+            return old_price
+        else:
+            await self.pool.execute(
+                "INSERT INTO product_watch_results (watch_id, product_id, title, shop, link, last_price) "
+                "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                watch_id, product_id, title, shop, link, price
+            )
+            return None
+    async def get_watch_results_count(self, watch_id: int) -> int:
+        """Count how many results are stored for a watch."""
+        row = await self.pool.fetchrow(
+            "SELECT COUNT(*) AS cnt FROM product_watch_results WHERE watch_id = $1",
+            watch_id
+        )
+        return row["cnt"]
 db = Database()
