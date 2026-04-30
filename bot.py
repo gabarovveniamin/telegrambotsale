@@ -34,7 +34,7 @@ def build_main_menu(user_id: int = None) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
          InlineKeyboardButton(text="👑 Premium", callback_data="menu_premium")],
-        [InlineKeyboardButton(text="🔍 Слежка по названию", callback_data="menu_watch")],
+        [InlineKeyboardButton(text="🔍 Слежка по названию [Beta]", callback_data="menu_watch")],
         [InlineKeyboardButton(text="🔗 Реферальная программа", callback_data="menu_referral")],
         [InlineKeyboardButton(text="📊 Моя статистика", callback_data="menu_stats")],
     ]
@@ -382,14 +382,16 @@ async def cb_watch_menu(callback: types.CallbackQuery):
 async def _build_watch_menu_text(watches: list) -> str:
     if not watches:
         return (
-            "🔍 <b>Слежка по названию</b>\n\n"
+            "🔍 <b>Слежка по названию</b> <i>[Beta]</i>\n\n"
+            "Функция находится в стадии бета-тестирования. "
+            "Возможны неточности в результатах поиска.\n\n"
             "Введите название товара — я буду искать его на всех маркетплейсах "
             "(Kaspi, Technodom, Sulpak, Alser) и пришлю уведомление, "
             "когда цена снизится.\n\n"
             "У вас пока нет активных слежений. Нажмите <b>+ Добавить товар</b>!"
         )
     lines = [
-        "🔍 <b>Слежка по названию</b>\n\n",
+        "🔍 <b>Слежка по названию</b> <i>[Beta]</i>\n\n",
         f"📋 Активных слежений: <b>{len(watches)}</b>\n\n",
     ]
     for w in watches:
